@@ -66,7 +66,7 @@ impl VideoPipeline {
         #[cfg(not(windows))]
         {
             Self::start_with(
-                ib_capture::platform_source()?,
+                crate::platform::capture_source()?,
                 None,
                 region,
                 client_max,
@@ -183,7 +183,50 @@ fn make_encoder(
         }
         #[cfg(not(windows))]
         FrameData::Gpu(_) => anyhow::bail!("no hardware encoder on this platform"),
-        FrameData::Cpu(_) => Ok(Box::new(encoder_for(region, client_max)?)),
+        FrameData::Cpu(_) => {
+            #[cfg(all(target_os = "linux", feature = "vaapi"))]
+            if let Some(enc) = vaapi_encoder(region, client_max) {
+                return Ok(enc);
+            }
+            Ok(Box::new(encoder_for(region, client_max)?))
+        }
+    }
+}
+
+/// Linux hardware encoder for CPU frames, at the tablet's full resolution.
+/// `None` (logged once) when the GPU or driver can't encode H.264.
+#[cfg(all(target_os = "linux", feature = "vaapi"))]
+fn vaapi_encoder(region: Region, client_max: (u32, u32)) -> Option<Box<dyn VideoEncoder>> {
+    static UNAVAILABLE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if UNAVAILABLE.load(std::sync::atomic::Ordering::Relaxed) {
+        return None;
+    }
+    let (width, height) = fit_within(region.width, region.height, client_max.0, client_max.1);
+    let bitrate_kbps =
+        ((u64::from(width) * u64::from(height) * 10 / 1000) as u32).min(HARDWARE_MAX_KBPS);
+    let config = EncoderConfig {
+        codec: VideoCodec::H264,
+        width,
+        height,
+        fps: FPS,
+        bitrate_kbps,
+    };
+    match ib_encode::VaapiEncoder::new(config) {
+        Ok(enc) => {
+            tracing::info!(
+                ?region,
+                width,
+                height,
+                bitrate_kbps,
+                "hardware video encoder (VA-API)"
+            );
+            Some(Box::new(enc))
+        }
+        Err(e) => {
+            UNAVAILABLE.store(true, std::sync::atomic::Ordering::Relaxed);
+            tracing::info!("no VA-API encoder, using software: {e}");
+            None
+        }
     }
 }
 
@@ -235,7 +278,7 @@ impl Rate {
 /// Consecutive hardware failures before falling back to software for good.
 const HARDWARE_RETRIES: u32 = 3;
 /// Bitrate ceiling for the hardware path (kbit/s).
-#[cfg(windows)]
+#[cfg(any(windows, all(target_os = "linux", feature = "vaapi")))]
 const HARDWARE_MAX_KBPS: u32 = 25_000;
 
 fn run(

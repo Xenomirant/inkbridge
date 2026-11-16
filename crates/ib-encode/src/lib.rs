@@ -8,14 +8,20 @@
 //! B-frames, zero lookahead, no frame queue (one frame in flight),
 //! intra-refresh instead of periodic large keyframes. See ADR-0005.
 
+pub mod h264;
 #[cfg(windows)]
 mod mf;
+pub mod nv12;
 mod openh264;
 mod scale;
+#[cfg(all(target_os = "linux", feature = "vaapi"))]
+mod vaapi;
 
 #[cfg(windows)]
 pub use crate::mf::MfEncoder;
 pub use crate::openh264::OpenH264Encoder;
+#[cfg(all(target_os = "linux", feature = "vaapi"))]
+pub use crate::vaapi::VaapiEncoder;
 pub use scale::{fit_within, scale_bgra};
 
 use ib_capture::Frame;

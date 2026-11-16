@@ -14,8 +14,13 @@ ib-protocol.workspace = true
 ib-geometry.workspace = true
 thiserror.workspace = true
 
+[features]
+# Linux Wayland pointer fallback through the RemoteDesktop portal.
+wayland = ["dep:ib-portal"]
+
 [target.'cfg(target_os = "linux")'.dependencies]
 evdev.workspace = true
+ib-portal = { workspace = true, optional = true }
 
 [target.'cfg(windows)'.dependencies]
 windows = { workspace = true, features = [
@@ -25,6 +30,9 @@ windows = { workspace = true, features = [
     "Win32_UI_Input_Pointer",
     "Win32_UI_WindowsAndMessaging",
 ] }
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+tokio.workspace = true
 
 [lints]
 workspace = true

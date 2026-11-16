@@ -10,12 +10,16 @@
 
 #[cfg(target_os = "linux")]
 mod linux;
+#[cfg(all(target_os = "linux", feature = "wayland"))]
+mod portal;
 mod tracker;
 #[cfg(windows)]
 mod windows;
 
 #[cfg(target_os = "linux")]
 pub use linux::UinputPenSink;
+#[cfg(all(target_os = "linux", feature = "wayland"))]
+pub use portal::PortalPointerSink;
 pub use tracker::{PenTracker, Step};
 #[cfg(windows)]
 pub use windows::WindowsPenSink;

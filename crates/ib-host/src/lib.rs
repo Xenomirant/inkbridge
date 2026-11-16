@@ -14,5 +14,7 @@ pub mod storage;
 pub mod touch;
 pub mod usb;
 pub mod video;
+#[cfg(all(target_os = "linux", feature = "wayland"))]
+pub mod wayland;
 
 pub use server::{Host, HostConfig};

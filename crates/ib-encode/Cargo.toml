@@ -15,6 +15,18 @@ ib-capture.workspace = true
 thiserror.workspace = true
 openh264.workspace = true
 
+[features]
+# Linux hardware encoding through VA-API (Intel, AMD, and NVIDIA/WSL via
+# Mesa). Building it needs libva-dev and libclang-dev.
+vaapi = ["dep:bindgen", "dep:pkg-config", "dep:tracing"]
+
+[build-dependencies]
+bindgen = { workspace = true, optional = true }
+pkg-config = { workspace = true, optional = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+tracing = { workspace = true, optional = true }
+
 [target.'cfg(windows)'.dependencies]
 windows = { workspace = true, features = [
     "Win32_Foundation",

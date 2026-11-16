@@ -31,8 +31,20 @@ directories.workspace = true
 qrcode.workspace = true
 if-addrs.workspace = true
 
+[features]
+default = ["wayland", "vaapi"]
+# Linux Wayland desktops (portal + PipeWire). Building it on Linux needs
+# libpipewire-0.3-dev and libclang-dev; `--no-default-features` builds an
+# X11-only Linux host. No effect on other OSes.
+wayland = ["ib-capture/wayland", "ib-inject/wayland", "dep:ib-portal"]
+# Linux hardware encoding (needs libva-dev and libclang-dev to build).
+vaapi = ["ib-encode/vaapi"]
+
 [dev-dependencies]
 openh264.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+ib-portal = { workspace = true, optional = true }
 
 [target.'cfg(windows)'.dependencies]
 windows = { workspace = true, features = [

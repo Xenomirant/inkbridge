@@ -19,6 +19,7 @@ ib-capture = { path = "crates/ib-capture" }
 ib-transport = { path = "crates/ib-transport" }
 ib-session = { path = "crates/ib-session" }
 ib-inject = { path = "crates/ib-inject" }
+ib-portal = { path = "crates/ib-portal" }
 ib-clock = { path = "crates/ib-clock" }
 ib-encode = { path = "crates/ib-encode" }
 
@@ -51,6 +52,13 @@ evdev = "0.13.2"
 # Linux: X11 screen capture (pure-Rust client: shared memory + damage).
 x11rb = { version = "0.14", features = ["shm", "damage", "xfixes"] }
 libc = "0.2"
+# Linux Wayland: xdg-desktop-portal client (pure Rust, D-Bus).
+# Linux VA-API encoder: bindings generated from the installed libva headers.
+bindgen = { version = "0.73", default-features = false, features = ["runtime"] }
+pkg-config = "0.3"
+# Linux Wayland: PipeWire client (binds libpipewire; feature-gated).
+pipewire = "0.10.1"
+ashpd = { version = "0.14", default-features = false, features = ["tokio", "screencast", "remote_desktop"] }
 # Rust <-> Kotlin/Swift bindings; pre-1.0, so pinned to a minor version (ADR-0001).
 uniffi = "=0.32.2"
 

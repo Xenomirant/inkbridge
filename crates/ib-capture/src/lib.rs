@@ -9,6 +9,10 @@
 //! can consume them without a CPU copy; [`FrameData::Cpu`] exists for the
 //! software encoder fallback and tests.
 
+#[cfg(all(target_os = "linux", feature = "wayland"))]
+mod pipewire;
+#[cfg(all(target_os = "linux", feature = "wayland"))]
+pub use pipewire::PipeWireScreenSource;
 #[cfg(windows)]
 mod windows;
 #[cfg(target_os = "linux")]
@@ -101,10 +105,12 @@ pub fn platform_source() -> Result<Box<dyn ScreenSource>, CaptureError> {
     #[cfg(target_os = "linux")]
     {
         // Wayland sessions need the screen-cast portal (XWayland only sees
-        // X11 apps, not the desktop).
+        // X11 apps, not the desktop): the host requests it at startup and
+        // builds a `PipeWireScreenSource` from the granted stream.
         if std::env::var("XDG_SESSION_TYPE").is_ok_and(|t| t == "wayland") {
             return Err(CaptureError::Unavailable(
-                "Wayland screen capture (portal + PipeWire) isn't available yet; X11 sessions work"
+                "Wayland needs the desktop's screen-sharing permission (portal), \
+                 which wasn't granted or isn't built in"
                     .into(),
             ));
         }

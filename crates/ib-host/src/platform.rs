@@ -113,6 +113,31 @@ pub fn raise_thread_priority() {
     }
 }
 
+/// The screen capture backend for a new tablet session: on Wayland the
+/// portal stream granted at startup, otherwise the OS default.
+pub fn capture_source() -> Result<Box<dyn ib_capture::ScreenSource>, ib_capture::CaptureError> {
+    #[cfg(all(target_os = "linux", feature = "wayland"))]
+    if let Some(d) = crate::wayland::desktop() {
+        return Ok(d.capture());
+    }
+    ib_capture::platform_source()
+}
+
+/// The pen backend. Linux: the uinput virtual tablet (pressure; Advanced
+/// option), else on Wayland the portal pointer (no setup, no pressure).
+pub fn pen_sink(desktop: Region) -> Result<Box<dyn ib_inject::PenSink>, ib_inject::InjectError> {
+    let sink = ib_inject::platform_sink(desktop);
+    #[cfg(all(target_os = "linux", feature = "wayland"))]
+    if sink.is_err()
+        && let Some(s) =
+            crate::wayland::desktop().and_then(crate::wayland::WaylandDesktop::pointer_sink)
+    {
+        tracing::info!("pen works as a mouse (no pressure); run --setup-uinput for pressure");
+        return Ok(s);
+    }
+    sink
+}
+
 /// Bounds of the primary display in physical pixels.
 pub fn primary_display() -> Region {
     #[cfg(windows)]
@@ -134,7 +159,7 @@ pub fn primary_display() -> Region {
     }
     #[cfg(target_os = "linux")]
     {
-        if let Ok(d) = ib_capture::platform_source().and_then(|s| s.displays())
+        if let Ok(d) = capture_source().and_then(|s| s.displays())
             && let Some(primary) = d.into_iter().find(|d| d.primary)
         {
             return primary.bounds;

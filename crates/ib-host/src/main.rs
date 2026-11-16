@@ -139,25 +139,39 @@ async fn main() -> anyhow::Result<()> {
     let dir = storage::config_dir();
     let identity = storage::load_or_create_identity(&dir)?;
     let store = PairingStore::load(&dir.join("paired-devices.txt"))?;
+    #[cfg(all(target_os = "linux", feature = "wayland"))]
+    if ib_host::wayland::is_wayland_session() && !args.fake_sink {
+        // Pointer control is only needed when the pressure pen (uinput)
+        // isn't set up; asking for less keeps the desktop's dialog simple.
+        let probe = ib_geometry::Region {
+            x: 0,
+            y: 0,
+            width: 1920,
+            height: 1080,
+        };
+        let uinput = ib_inject::UinputPenSink::new(probe).is_ok();
+        if let Err(e) = ib_host::wayland::connect(&dir, !uinput) {
+            tracing::warn!("Wayland screen sharing unavailable: {e:#}");
+        }
+    }
     let region = platform::primary_display();
 
     let make_sink: SinkFactory = if args.fake_sink {
         Box::new(|| Ok(Box::new(LoggingSink(FakePenSink::default())) as Box<dyn PenSink>))
     } else {
-        Box::new(move || ib_inject::platform_sink(region))
+        Box::new(move || platform::pen_sink(region))
     };
+    // Advertise what the backend actually delivers (probe it once).
     let features = if args.fake_sink {
         FakePenSink::default().features()
     } else {
-        // Advertise what the backend supports; Windows supports everything.
-        ib_protocol::PenFeatures {
-            pressure: true,
-            tilt: true,
-            rotation: true,
-            hover: true,
-            eraser: true,
-            barrel_button: true,
-        }
+        platform::pen_sink(region).map_or_else(
+            |e| {
+                tracing::warn!("{e}");
+                ib_protocol::PenFeatures::default()
+            },
+            |s| s.features(),
+        )
     };
     let (pen_tx, pen_handle) = pen_thread::spawn(make_sink, region)?;
 
@@ -171,7 +185,7 @@ async fn main() -> anyhow::Result<()> {
         bind,
         region,
         pen_features: features,
-        video: ib_capture::platform_source().is_ok(),
+        video: platform::capture_source().is_ok(),
     };
     let host = Host::new(identity, config, store, pen_tx.clone())?;
     tracing::info!(addr = %host.local_addr()?, ?region, config = %dir.display(), "host listening");
