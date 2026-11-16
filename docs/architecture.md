@@ -18,7 +18,7 @@ Inkbridge turns a pen tablet (first target: Android tablets with an active stylu
 | G1 | Windows, macOS, Linux hosts | Platform code isolated behind traits; one shared core. |
 | G2 | Screen streaming on by default | Low-latency hardware video encode/decode is a core subsystem, not an add-on. |
 | G3 | Native pen input (pressure, tilt) | Per-OS injection backends; pen events are never "just mouse". |
-| G4 | **No admin rights, no drivers, no adb, minimal system changes** | Only user-level OS APIs; any unavoidable OS permission is requested through the OS's normal consent prompt and explained in-app. See §6. |
+| G4 | **No admin rights, no drivers, no adb by default; minimal system changes** | The default path uses only user-level OS APIs; unavoidable OS permissions are requested through the OS's normal consent prompt and explained in-app. Where a platform limit has **no user-level solution**, an opt-in **Advanced option** may use adb, a udev rule, vendor device software or an elevated helper — clearly labelled, never required for the basic experience. See §6. |
 | G5 | Wi-Fi and USB | All transports are IP-based so one protocol stack serves both (ADR-0002). |
 | G6 | Maintainable, transferable | Rust workspace, strict module boundaries, versioned protocol, CI on all platforms, docs + ADRs. |
 | G7 | Secure by default | Pairing + mutual authentication + encryption. An unauthenticated pen-injection endpoint is equivalent to remote control of the PC and must never exist. |
@@ -131,7 +131,30 @@ Tauri (Rust backend + small web UI): tray icon, pairing QR, display/region picke
 | Screen | — | Screen Recording prompt | portal dialog (Wayland) |
 | Input | — | Accessibility prompt | optional udev rule for pressure; otherwise reduced features |
 | Firewall | per-user firewall prompt may appear for UDP listen | — | — |
-| Admin / drivers / adb | **never required** | **never required** | **never required** |
+| Admin / drivers / adb | **not required for the default path** | **not required for the default path** | **not required for the default path** |
+
+**Advanced options** (opt-in, labelled "Advanced", each with an in-app explanation of what it changes and how to undo it). They exist only where the default path hits a platform limit:
+
+| Option | Overcomes | Platforms |
+|---|---|---|
+| adb port forwarding over USB | No NCM tethering (e.g. Android tablet → Mac over USB); networks blocking all peer traffic | Android client, any host |
+| uinput udev rule (one-time, needs root) | No pressure/tilt on Linux without uinput (until libei stylus support lands) | Linux host |
+| Apple Mobile Device Support (via the free Apple Devices app) | iPad over USB on Windows | Windows host + iPad |
+| Elevated helper / uiAccess build | Pen input into elevated (admin) windows (UIPI) | Windows host |
+| Firewall rule / interface-metric fix | Campus firewalls, tethering hijacking the default route | Windows/Linux host |
+
+## 6a. Platform compatibility
+
+Every client works with every host; the protocol doesn't depend on platform. Wi-Fi works for every pair. USB differs:
+
+| | Wi-Fi | USB (default) | USB (Advanced) | Pen pressure |
+|---|---|---|---|---|
+| Android → Windows | ✅ | ✅ USB tethering (RNDIS) | adb | ✅ full |
+| Android → Linux | ✅ | ✅ USB tethering | adb | ✅ with uinput option / pointer-only otherwise |
+| Android → macOS | ✅ | ✅ only if the device tethers via NCM (e.g. Pixel 6+) | **adb** (needed for RNDIS-only tablets such as TB331FC) | ⚠️ app-dependent (CGEvent) |
+| iPad → macOS | ✅ | ✅ usbmuxd (built in) | — | ⚠️ app-dependent |
+| iPad → Windows | ✅ | ✅ once Apple Devices app is installed | — | ✅ full |
+| iPad → Linux | ✅ | ✅ libimobiledevice/usbmuxd | — | as Linux above |
 
 ## 7. Engineering practices
 - **Rust:** stable toolchain pinned via `rust-toolchain.toml`; `rustfmt` + `clippy -D warnings`; `thiserror` in libraries, `anyhow` only in binaries; `tracing` for structured logs; `tokio` runtime confined to `ib-transport`/`ib-host`.
@@ -160,10 +183,11 @@ Kept out of the first milestones, but designed for now:
 | M6 | Packaging, signing, auto-update, docs site | Public beta |
 
 ## 10. Open questions
-1. **Licence model** (open source vs. closed/commercial) — affects reuse of prior art: Weylus (AGPL-3.0), Sunshine/Moonlight (GPL-3.0) can be studied but not copied into a closed product.
-2. **iPad client** — out of scope now; protocol is ready for it.
-3. Product name.
-4. Distribution channel for the Android app in China (no Google Play on PRC tablets): direct APK, Lenovo/Huawei/Xiaomi stores, F-Droid?
+1. ~~Licence model~~ — **resolved:** GPL-3.0-or-later + App Store permission (ADR-0004).
+2. ~~iPad client~~ — **resolved:** in scope for M4 (a borrowed iPad for testing); protocol and core are shared.
+3. ~~Product name~~ — **resolved:** Inkbridge.
+4. ~~Encoding approach~~ — **resolved:** native OS encoders (ADR-0005).
+5. Distribution channel for the Android app in China (no Google Play on PRC tablets): direct APK, Lenovo/Huawei/Xiaomi stores, F-Droid?
 
 ## 11. Risks
 | Risk | Mitigation |

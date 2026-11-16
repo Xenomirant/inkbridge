@@ -1,0 +1,18 @@
+[package]
+name = "ib-inject"
+description = "Inkbridge pen injection: PenSink trait, per-OS backends and a fake for tests."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[dependencies]
+ib-protocol.workspace = true
+ib-geometry.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

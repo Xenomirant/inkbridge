@@ -21,6 +21,7 @@ Already in place: `~/projects/inkbridge` (git initialised, nothing committed) wi
 | Linux pen | uinput (full pressure) as an **opt-in** one-time udev rule; default no-root path = RemoteDesktop portal + libei (`reis`) pointer-only, switching to stylus once **libei ≥1.7** + compositor support lands | Respects "no admin" by default. |
 | macOS pen | Post CGEvent tablet pointer + proximity events (Accessibility permission). Avoid virtual HID (CoreHID pressure bug FB24785043 on macOS 26) | The only working driverless path; app compatibility gets tested. |
 | Handwriting | Pluggable `Recognizer`; tier 1 = OS recognisers (Windows Ink, iPadOS `PKStrokeRecognizer`; ML Kit optional, unreliable in China); tier 2 = bundled open models on **tract** (pure Rust, older CPUs) — Zinnia/Tegaki for CJK characters + our own small LSTM-CTC line model; correction UI first | No open multilingual stroke model exists; datasets are mostly non-commercial → weights under a separate licence. |
+| Advanced options | adb port forwarding, uinput udev rule, Apple Devices app, elevated/uiAccess helper, firewall/route fixes — **opt-in, labelled "Advanced"**, used only where no user-level option exists (see architecture §6) | User decision 2026-11-16: the default stays admin/adb-free, but power users shouldn't be blocked by platform limits. |
 
 ## Latency strategy (designed in from M0)
 Target pen-to-photon: **≤ 50 ms over Wi-Fi, ≤ 35 ms over USB**; perceived ink latency **≈ 0** thanks to local prediction.

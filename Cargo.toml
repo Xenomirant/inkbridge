@@ -1,0 +1,45 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.100"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/inkbridge/inkbridge"
+authors = ["Inkbridge contributors"]
+publish = false
+
+[workspace.dependencies]
+# Internal crates
+ib-protocol = { path = "crates/ib-protocol" }
+ib-geometry = { path = "crates/ib-geometry" }
+ib-capture = { path = "crates/ib-capture" }
+
+# External crates (versions pinned centrally)
+serde = { version = "1", features = ["derive"] }
+postcard = { version = "1", default-features = false, features = ["use-std"] }
+thiserror = "2"
+proptest = "1"
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+missing_debug_implementations = "warn"
+rust_2018_idioms = { level = "warn", priority = -1 }
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+similar_names = "allow"
+doc_markdown = "allow"
+must_use_candidate = "allow"
+missing_errors_doc = "allow"
+cast_precision_loss = "allow"
+cast_possible_truncation = "allow"
+cast_sign_loss = "allow"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1

@@ -1,0 +1,25 @@
+//! Inkbridge wire protocol.
+//!
+//! This crate defines every message exchanged between a desktop **host** and a
+//! tablet **client**. It performs no I/O: transports hand it bytes and get
+//! typed messages back. That keeps it trivially testable and lets every
+//! platform (Rust host, Android and iPad via `UniFFI`) share one definition.
+//!
+//! Channels (see `docs/protocol.md`):
+//! - **control**: reliable, ordered stream carrying [`ControlMessage`];
+//! - **pen**: unreliable datagrams carrying [`PenBatch`];
+//! - **video**: unidirectional streams carrying [`VideoChunk`].
+
+mod caps;
+mod codec;
+mod control;
+mod pen;
+mod version;
+mod video;
+
+pub use caps::{Capabilities, PenFeatures, TransportKind, VideoCodec};
+pub use codec::{DecodeError, EncodeError, MAX_MESSAGE_LEN, decode, encode};
+pub use control::{ClientHello, ControlMessage, HostHello, Region, Reject, RejectReason};
+pub use pen::{Buttons, PenBatch, PenSample, PenState, Tool};
+pub use version::{PROTOCOL_VERSION, ProtocolVersion};
+pub use video::{FrameKind, VideoChunk};

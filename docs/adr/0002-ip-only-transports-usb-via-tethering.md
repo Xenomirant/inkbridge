@@ -10,7 +10,7 @@ Options considered for USB:
 
 | Option | Admin/driver needed? | Notes |
 |---|---|---|
-| adb port forwarding | adb + developer mode on tablet | Scares users; disables on some OEM ROMs. Rejected as default (may be offered as an expert option). |
+| adb port forwarding | adb + developer mode on tablet | Scares users; disabled on some OEM ROMs. Not the default, but **offered as an Advanced option** (see architecture §6) because it's the only USB path for RNDIS-only tablets on macOS. |
 | Android Open Accessory (AOA) via libusb | Windows needs WinUSB driver binding (admin) | Rejected. |
 | **USB tethering (RNDIS/NCM)** | **No** — OS built-in class drivers on Windows, Linux, macOS (NCM) | Creates an ordinary IP link over the cable. |
 

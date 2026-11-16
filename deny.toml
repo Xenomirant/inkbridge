@@ -1,0 +1,37 @@
+# cargo-deny: licence compatibility with GPL-3.0-or-later, security advisories,
+# and supply-chain hygiene. Run locally with `cargo deny check`.
+
+[advisories]
+version = 2
+yanked = "deny"
+
+[licenses]
+version = 2
+confidence-threshold = 0.9
+unused-allowed-license = "allow"
+# Permissive and weak-copyleft licences compatible with distributing the
+# combined work under GPL-3.0-or-later.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "Unicode-3.0",
+    "MPL-2.0",
+    "CC0-1.0",
+    "GPL-3.0-or-later",
+    "LGPL-2.1-or-later",
+    "LGPL-3.0-or-later",
+]
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+allow-wildcard-paths = true
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

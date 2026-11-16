@@ -1,0 +1,21 @@
+[package]
+name = "ib-protocol"
+description = "Inkbridge wire protocol: message types, versioning and encoding (no I/O)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[dependencies]
+serde.workspace = true
+postcard.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+
+[lints]
+workspace = true

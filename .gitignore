@@ -1,0 +1,14 @@
+/target
+**/*.rs.bk
+.DS_Store
+.idea/
+.vscode/
+*.log
+# Android / Gradle
+apps/android/.gradle/
+apps/android/build/
+apps/android/**/build/
+apps/android/local.properties
+# iOS / Xcode
+apps/ios/**/xcuserdata/
+apps/ios/build/
