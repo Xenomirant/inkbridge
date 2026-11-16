@@ -77,6 +77,71 @@ pub struct HostInfo {
     pub eraser: bool,
 }
 
+/// Live latency figures for the on-screen overlay (milliseconds, medians
+/// over the last few seconds unless noted).
+#[derive(Debug, Clone, Default, uniffi::Record)]
+pub struct LatencyReport {
+    /// Capture → encoded, on the computer.
+    pub encode_ms: f32,
+    /// Encoded → received by the tablet (network, one way).
+    pub network_ms: f32,
+    /// Capture on the computer → shown on the tablet (end to end).
+    pub total_ms: f32,
+    pub total_p95_ms: f32,
+    pub fps: f32,
+    /// Clock-sync round trip (lowest recent).
+    pub rtt_ms: f32,
+}
+
+/// Clock sync and per-stage latency statistics for one session.
+#[derive(Debug, Default)]
+struct Telemetry {
+    sync: ib_clock::ClockSync,
+    encode: ib_clock::LatencyStats,
+    network: ib_clock::LatencyStats,
+    total: ib_clock::LatencyStats,
+    presented: std::collections::VecDeque<u64>,
+}
+
+impl Telemetry {
+    fn on_video(&mut self, chunk: &VideoChunk, received_local_us: u64) {
+        self.encode
+            .record_us(chunk.encode_done_t_us.saturating_sub(chunk.capture_t_us));
+        if let Some(sent) = self.sync.remote_to_local(chunk.encode_done_t_us) {
+            self.network
+                .record_us(received_local_us.saturating_sub(sent));
+        }
+    }
+
+    fn on_presented(&mut self, capture_host_us: u64, now_local_us: u64) {
+        if let Some(captured) = self.sync.remote_to_local(capture_host_us) {
+            self.total.record_us(now_local_us.saturating_sub(captured));
+        }
+        self.presented.push_back(now_local_us);
+        while self
+            .presented
+            .front()
+            .is_some_and(|t| now_local_us.saturating_sub(*t) > 1_000_000)
+        {
+            self.presented.pop_front();
+        }
+    }
+
+    fn report(&self) -> LatencyReport {
+        let ms = |s: &ib_clock::LatencyStats, p: f64| {
+            s.percentile_us(p).map_or(0.0, |us| us as f32 / 1000.0)
+        };
+        LatencyReport {
+            encode_ms: ms(&self.encode, 50.0),
+            network_ms: ms(&self.network, 50.0),
+            total_ms: ms(&self.total, 50.0),
+            total_p95_ms: ms(&self.total, 95.0),
+            fps: self.presented.len() as f32,
+            rtt_ms: self.sync.min_rtt_us().map_or(0.0, |us| us as f32 / 1000.0),
+        }
+    }
+}
+
 /// One encoded video frame (Annex-B H.264 access unit).
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct EncodedVideoFrame {
@@ -215,6 +280,7 @@ pub struct Session {
     region: Arc<Mutex<(u32, u32)>>,
     /// Incoming encoded video, if the session streams the screen.
     video: Option<Mutex<mpsc::Receiver<VideoChunk>>>,
+    telemetry: Arc<Mutex<Telemetry>>,
 }
 
 impl std::fmt::Debug for Session {
@@ -307,7 +373,7 @@ impl Session {
         );
         let video = hello
             .codec
-            .map(|_| spawn_video_receiver(&runtime, &connection));
+            .map(|_| spawn_video_receiver(&runtime, &connection, tasks.telemetry.clone()));
 
         let host = HostInfo {
             name: hello.host_name,
@@ -330,6 +396,7 @@ impl Session {
             host,
             region: tasks.region,
             video,
+            telemetry: tasks.telemetry,
         }))
     }
 
@@ -419,6 +486,21 @@ impl Session {
         })
     }
 
+    /// Tells the core a frame captured at `capture_t_us` (computer clock, as
+    /// given in the frame) reached the screen, for end-to-end latency.
+    pub fn frame_presented(&self, capture_t_us: u64) {
+        if let Ok(mut t) = self.telemetry.lock() {
+            t.on_presented(capture_t_us, ib_clock::now_us());
+        }
+    }
+
+    /// Current latency figures for the overlay.
+    pub fn latency(&self) -> LatencyReport {
+        self.telemetry
+            .lock()
+            .map_or_else(|_| LatencyReport::default(), |t| t.report())
+    }
+
     /// Asks the computer for a keyframe (decoder start or error). Never blocks.
     pub fn request_keyframe(&self) {
         let _ = self.control_tx.send(ControlMessage::RequestKeyframe);
@@ -455,6 +537,7 @@ struct SessionTasks {
     control_tx: mpsc::UnboundedSender<ControlMessage>,
     closed: Arc<AtomicBool>,
     region: Arc<Mutex<(u32, u32)>>,
+    telemetry: Arc<Mutex<Telemetry>>,
 }
 
 /// Starts the control writer (so input handlers never block on the
@@ -484,13 +567,50 @@ fn spawn_session_tasks(
 
     let region = Arc::new(Mutex::new(initial_region));
     let region_reader = region.clone();
+    let telemetry = Arc::new(Mutex::new(Telemetry::default()));
+    let telemetry_reader = telemetry.clone();
     runtime.spawn(async move {
         while let Ok(msg) = receiver.recv().await {
-            if let ControlMessage::SetRegion(r) = msg
-                && let Ok(mut g) = region_reader.lock()
-            {
-                *g = (r.width, r.height);
+            match msg {
+                ControlMessage::SetRegion(r) => {
+                    if let Ok(mut g) = region_reader.lock() {
+                        *g = (r.width, r.height);
+                    }
+                }
+                ControlMessage::Pong {
+                    t0_us,
+                    t1_us,
+                    t2_us,
+                } => {
+                    let t3 = ib_clock::now_us();
+                    if let Ok(mut t) = telemetry_reader.lock() {
+                        t.sync.add(ib_clock::Exchange {
+                            t0: t0_us,
+                            t1: t1_us,
+                            t2: t2_us,
+                            t3,
+                        });
+                    }
+                }
+                _ => {}
             }
+        }
+    });
+
+    // Clock sync: a ping per second (fast at first) keeps the offset fresh.
+    let pinger = control_tx.clone();
+    runtime.spawn(async move {
+        for i in 0u32.. {
+            if pinger
+                .send(ControlMessage::Ping {
+                    t0_us: ib_clock::now_us(),
+                })
+                .is_err()
+            {
+                break;
+            }
+            let pause = if i < 8 { 100 } else { 1000 };
+            tokio::time::sleep(Duration::from_millis(pause)).await;
         }
     });
 
@@ -505,6 +625,7 @@ fn spawn_session_tasks(
         control_tx,
         closed,
         region,
+        telemetry,
     }
 }
 
@@ -514,6 +635,7 @@ fn spawn_session_tasks(
 fn spawn_video_receiver(
     runtime: &tokio::runtime::Runtime,
     connection: &Connection,
+    telemetry: Arc<Mutex<Telemetry>>,
 ) -> Mutex<mpsc::Receiver<VideoChunk>> {
     let (tx, rx) = mpsc::channel::<VideoChunk>(8);
     let conn = connection.clone();
@@ -522,6 +644,9 @@ fn spawn_video_receiver(
             return;
         };
         while let Ok(chunk) = stream.recv().await {
+            if let Ok(mut t) = telemetry.lock() {
+                t.on_video(&chunk, ib_clock::now_us());
+            }
             if tx.send(chunk).await.is_err() {
                 break;
             }

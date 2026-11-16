@@ -31,7 +31,14 @@ class PadActivity : ComponentActivity() {
             }
             val host = s.host()
             pad.onHostRegion(host.regionWidth, host.regionHeight)
-            info.text = "${host.name} · ${"%.1f".format(s.rttUs().toDouble() / 1000.0)} ms"
+            info.text = if (s.hasVideo()) {
+                val l = s.latency()
+                "%s · screen %.0f ms (p95 %.0f) · encode %.0f · net %.0f · %.0f fps".format(
+                    host.name, l.totalMs, l.totalP95Ms, l.encodeMs, l.networkMs, l.fps,
+                )
+            } else {
+                "${host.name} · ${"%.1f".format(s.rttUs().toDouble() / 1000.0)} ms"
+            }
             // Fast enough that the area follows a rotation almost at once.
             info.postDelayed(this, 250)
         }

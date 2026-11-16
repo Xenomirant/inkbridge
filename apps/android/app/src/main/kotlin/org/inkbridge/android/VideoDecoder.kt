@@ -98,6 +98,8 @@ class VideoDecoder(private val session: Session, private val surface: Surface) {
             val index = c.dequeueOutputBuffer(info, 0)
             if (index < 0) return // try-again, format or buffers changed
             c.releaseOutputBuffer(index, true)
+            // presentationTimeUs carries the computer's capture time.
+            session.framePresented(info.presentationTimeUs.toULong())
         }
     }
 

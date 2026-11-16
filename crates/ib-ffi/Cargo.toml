@@ -25,6 +25,7 @@ bindgen = ["uniffi/cli"]
 
 [dependencies]
 ib-protocol.workspace = true
+ib-clock.workspace = true
 ib-transport.workspace = true
 ib-session.workspace = true
 thiserror.workspace = true
