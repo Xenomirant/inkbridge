@@ -17,6 +17,10 @@ pub enum FrameKind {
 pub struct VideoChunk {
     pub frame_no: u64,
     pub kind: FrameKind,
+    /// Coded picture size; a change means the decoder must be reconfigured
+    /// (always on a keyframe).
+    pub width: u32,
+    pub height: u32,
     pub capture_t_us: u64,
     pub encode_done_t_us: u64,
     /// Annex-B H.264/HEVC bitstream.

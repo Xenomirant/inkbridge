@@ -9,6 +9,11 @@
 //! can consume them without a CPU copy; [`FrameData::Cpu`] exists for the
 //! software encoder fallback and tests.
 
+#[cfg(windows)]
+mod windows;
+#[cfg(windows)]
+pub use windows::WindowsScreenSource;
+
 use std::time::Duration;
 
 use ib_protocol::Region;
@@ -68,6 +73,20 @@ pub trait ScreenSource: Send {
     fn next_frame(&mut self, timeout: Duration) -> Result<Option<Frame>, CaptureError>;
 }
 
+/// The best capture backend on this OS, if any.
+pub fn platform_source() -> Result<Box<dyn ScreenSource>, CaptureError> {
+    #[cfg(windows)]
+    {
+        Ok(Box::new(WindowsScreenSource::new()))
+    }
+    #[cfg(not(windows))]
+    {
+        Err(CaptureError::Unavailable(
+            "no screen capture backend for this OS yet (Linux in M3, macOS in M4)".into(),
+        ))
+    }
+}
+
 /// Produces solid-colour CPU frames whose colour changes every frame.
 #[derive(Debug, Default)]
 pub struct FakeScreenSource {
@@ -107,7 +126,7 @@ impl ScreenSource for FakeScreenSource {
         let shade = (self.frame_no % 256) as u8;
         let px = (region.width as usize) * (region.height as usize);
         Ok(Some(Frame {
-            capture_t_us: self.frame_no * 16_667,
+            capture_t_us: ib_clock::now_us(),
             width: region.width,
             height: region.height,
             data: FrameData::Cpu([shade, shade, shade, 0xFF].repeat(px)),

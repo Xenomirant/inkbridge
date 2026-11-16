@@ -169,6 +169,16 @@ impl Connection {
         Ok(Control::new(send, recv))
     }
 
+    /// Host: opens the video stream to the tablet.
+    pub async fn open_video(&self) -> Result<crate::VideoSender, TransportError> {
+        Ok(crate::VideoSender::new(self.conn.open_uni().await?))
+    }
+
+    /// Tablet: accepts the host's video stream.
+    pub async fn accept_video(&self) -> Result<crate::VideoReceiver, TransportError> {
+        Ok(crate::VideoReceiver::new(self.conn.accept_uni().await?))
+    }
+
     pub fn pen(&self) -> PenChannel {
         PenChannel {
             conn: self.conn.clone(),

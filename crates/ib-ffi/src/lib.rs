@@ -18,7 +18,7 @@ use std::time::Duration;
 
 use ib_protocol::{
     Buttons, Capabilities, ClientHello, ControlMessage, PROTOCOL_VERSION, PenBatch, PenFeatures,
-    PenSample, PenState, Tool, TouchContact, TouchPhase,
+    PenSample, PenState, Tool, TouchContact, TouchPhase, VideoChunk, VideoCodec,
 };
 use ib_session::{SessionError, client_handshake};
 use ib_transport::{ClientEndpoint, Connection, Identity, PairingOffer, PenChannel};
@@ -75,6 +75,17 @@ pub struct HostInfo {
     pub tilt: bool,
     pub hover: bool,
     pub eraser: bool,
+}
+
+/// One encoded video frame (Annex-B H.264 access unit).
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct EncodedVideoFrame {
+    pub frame_no: u64,
+    pub keyframe: bool,
+    pub width: u32,
+    pub height: u32,
+    pub capture_t_us: u64,
+    pub data: Vec<u8>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
@@ -202,6 +213,8 @@ pub struct Session {
     host: HostInfo,
     /// Current desktop region size, updated by the computer.
     region: Arc<Mutex<(u32, u32)>>,
+    /// Incoming encoded video, if the session streams the screen.
+    video: Option<Mutex<mpsc::Receiver<VideoChunk>>>,
 }
 
 impl std::fmt::Debug for Session {
@@ -264,10 +277,11 @@ impl Session {
                 version: PROTOCOL_VERSION,
                 device_name: device_name.clone(),
                 caps: Capabilities {
-                    video_codecs: vec![],
-                    max_width: screen_width,
-                    max_height: screen_height,
-                    max_fps: 0,
+                    // Every Android device decodes H.264 in hardware.
+                    video_codecs: vec![VideoCodec::H264],
+                    max_width: screen_width.max(screen_height),
+                    max_height: screen_width.max(screen_height),
+                    max_fps: 60,
                     pen: PenFeatures {
                         pressure: true,
                         tilt: true,
@@ -291,6 +305,9 @@ impl Session {
             &connection,
             (hello.region.width, hello.region.height),
         );
+        let video = hello
+            .codec
+            .map(|_| spawn_video_receiver(&runtime, &connection));
 
         let host = HostInfo {
             name: hello.host_name,
@@ -312,6 +329,7 @@ impl Session {
             closed: tasks.closed,
             host,
             region: tasks.region,
+            video,
         }))
     }
 
@@ -373,6 +391,37 @@ impl Session {
         self.control_tx
             .send(ControlMessage::Touch(contacts))
             .map_err(|_| InkbridgeError::Transport("session closed".into()))
+    }
+
+    /// Whether the computer streams its screen in this session.
+    pub fn has_video(&self) -> bool {
+        self.video.is_some()
+    }
+
+    /// Next encoded video frame, waiting up to `timeout_ms`. Call from the
+    /// decoder thread (blocks); `None` on timeout or end of stream.
+    pub fn next_video_frame(&self, timeout_ms: u32) -> Option<EncodedVideoFrame> {
+        let video = self.video.as_ref()?;
+        let mut rx = video.lock().ok()?;
+        let chunk = self.runtime.block_on(async {
+            tokio::time::timeout(Duration::from_millis(u64::from(timeout_ms)), rx.recv())
+                .await
+                .ok()
+                .flatten()
+        })?;
+        Some(EncodedVideoFrame {
+            frame_no: chunk.frame_no,
+            keyframe: chunk.kind == ib_protocol::FrameKind::Key,
+            width: chunk.width,
+            height: chunk.height,
+            capture_t_us: chunk.capture_t_us,
+            data: chunk.payload,
+        })
+    }
+
+    /// Asks the computer for a keyframe (decoder start or error). Never blocks.
+    pub fn request_keyframe(&self) {
+        let _ = self.control_tx.send(ControlMessage::RequestKeyframe);
     }
 
     /// Smoothed network round-trip time in microseconds.
@@ -457,6 +506,28 @@ fn spawn_session_tasks(
         closed,
         region,
     }
+}
+
+/// Receives the host's video stream into a small queue for the decoder.
+/// The queue applies back-pressure to QUIC rather than dropping frames
+/// (a dropped delta frame would corrupt the picture).
+fn spawn_video_receiver(
+    runtime: &tokio::runtime::Runtime,
+    connection: &Connection,
+) -> Mutex<mpsc::Receiver<VideoChunk>> {
+    let (tx, rx) = mpsc::channel::<VideoChunk>(8);
+    let conn = connection.clone();
+    runtime.spawn(async move {
+        let Ok(mut stream) = conn.accept_video().await else {
+            return;
+        };
+        while let Ok(chunk) = stream.recv().await {
+            if tx.send(chunk).await.is_err() {
+                break;
+            }
+        }
+    });
+    Mutex::new(rx)
 }
 
 #[cfg(test)]

@@ -12,6 +12,10 @@ publish.workspace = true
 [dependencies]
 ib-protocol.workspace = true
 thiserror.workspace = true
+ib-clock.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-capture.workspace = true
 
 [lints]
 workspace = true

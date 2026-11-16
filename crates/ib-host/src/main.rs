@@ -123,6 +123,7 @@ async fn main() -> anyhow::Result<()> {
         bind,
         region,
         pen_features: features,
+        video: ib_capture::platform_source().is_ok(),
     };
     let host = Host::new(identity, config, store, pen_tx.clone())?;
     tracing::info!(addr = %host.local_addr()?, ?region, config = %dir.display(), "host listening");

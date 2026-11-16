@@ -30,6 +30,9 @@ class PenPadView(context: Context, private val session: Session) : View(context)
     private companion object {
         /** Movement before a two-finger gesture is classified (libinput uses a few mm). */
         const val GESTURE_SLOP_MM = 4f
+
+        /** Local ink stays this long after a stroke, covering the round trip. */
+        const val INK_FADE_MS = 700L
     }
 
     /** Aspect of the desktop region currently mapped to this tablet. */
@@ -67,6 +70,21 @@ class PenPadView(context: Context, private val session: Session) : View(context)
     private val outOfRange = Runnable { emit(listOf(lastSampleAs(PenContact.OUT_OF_RANGE) ?: return@Runnable)) }
     private var lastSample: StylusSample? = null
 
+    /** Called whenever the active (letterboxed) area moves or resizes. */
+    var onAreaChanged: ((RectF) -> Unit)? = null
+
+    /**
+     * With video, the pad is a transparent layer over the computer's screen
+     * and local ink is only a bridge until the real ink arrives: it fades
+     * shortly after each stroke.
+     */
+    var videoMode = false
+        set(v) {
+            field = v
+            setBackgroundColor(if (v) Color.TRANSPARENT else Color.rgb(250, 250, 250))
+        }
+    private val fadeInk = Runnable { clearInk() }
+
     init {
         setBackgroundColor(Color.rgb(250, 250, 250))
         isFocusable = true
@@ -102,6 +120,7 @@ class PenPadView(context: Context, private val session: Session) : View(context)
         } else {
             val ah = w / hostAspect; area.set(0f, (h - ah) / 2, w, (h + ah) / 2)
         }
+        onAreaChanged?.invoke(RectF(area))
         invalidate()
     }
 
@@ -117,6 +136,7 @@ class PenPadView(context: Context, private val session: Session) : View(context)
         val i = StylusMapper.stylusIndex(ev)
         if (i < 0) return onFingers(ev)
         if (ev.actionMasked == MotionEvent.ACTION_DOWN) {
+            removeCallbacks(fadeInk)
             cancelGesture() // the pen wins over resting fingers
             removeCallbacks(outOfRange)
             requestUnbufferedDispatch(ev) // full sample rate, no 60 Hz batching
@@ -130,6 +150,7 @@ class PenPadView(context: Context, private val session: Session) : View(context)
         val samples = StylusMapper.samples(ev, i, area, contact)
         emit(samples)
         drawLocal(ev, i, contact)
+        if (videoMode && contact != PenContact.CONTACT) postDelayed(fadeInk, INK_FADE_MS)
         return true
     }
 

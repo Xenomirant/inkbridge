@@ -3,6 +3,8 @@ package org.inkbridge.android
 import android.graphics.Color
 import android.os.Bundle
 import android.view.Gravity
+import android.view.SurfaceHolder
+import android.view.SurfaceView
 import android.view.WindowManager
 import android.widget.Button
 import android.widget.FrameLayout
@@ -18,6 +20,7 @@ class PadActivity : ComponentActivity() {
 
     private lateinit var info: TextView
     private lateinit var pad: PenPadView
+    private var decoder: VideoDecoder? = null
     private val ticker = object : Runnable {
         override fun run() {
             val s = SessionHolder.session
@@ -40,6 +43,7 @@ class PadActivity : ComponentActivity() {
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
         pad = PenPadView(this, session)
+        val screen = if (session.hasVideo()) SurfaceView(this) else null
         info = TextView(this).apply {
             textSize = 13f; alpha = 0.7f; setPadding(24, 12, 24, 12); setTextColor(Color.DKGRAY)
         }
@@ -49,6 +53,8 @@ class PadActivity : ComponentActivity() {
             setOnClickListener { pad.clearInk() }
         }
         setContentView(FrameLayout(this).apply {
+            setBackgroundColor(Color.BLACK)
+            screen?.let { addView(it, FrameLayout.LayoutParams(0, 0)) }
             addView(pad)
             addView(clear, FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.START,
@@ -58,11 +64,32 @@ class PadActivity : ComponentActivity() {
             ))
         })
         hideSystemBars()
+        screen?.let { attachVideo(session, it) }
 
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
                 SessionHolder.close()
                 finish()
+            }
+        })
+    }
+
+    /** The computer's screen, decoded under the transparent pen layer. */
+    private fun attachVideo(session: org.inkbridge.core.Session, screen: SurfaceView) {
+        pad.videoMode = true
+        // Keep the picture exactly on the pen's active area.
+        pad.onAreaChanged = { r ->
+            screen.layoutParams = FrameLayout.LayoutParams(r.width().toInt(), r.height().toInt()).apply {
+                leftMargin = r.left.toInt(); topMargin = r.top.toInt()
+            }
+        }
+        screen.holder.addCallback(object : SurfaceHolder.Callback {
+            override fun surfaceCreated(holder: SurfaceHolder) {
+                decoder = VideoDecoder(session, holder.surface).also { it.start() }
+            }
+            override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) = Unit
+            override fun surfaceDestroyed(holder: SurfaceHolder) {
+                decoder?.stop(); decoder = null
             }
         })
     }

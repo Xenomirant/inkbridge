@@ -13,6 +13,7 @@ publish.workspace = true
 ib-protocol.workspace = true
 ib-capture.workspace = true
 thiserror.workspace = true
+openh264.workspace = true
 
 [lints]
 workspace = true

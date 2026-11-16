@@ -19,11 +19,13 @@ mod framing;
 mod identity;
 mod pairing;
 mod tls;
+mod video;
 
 pub use endpoint::{ALPN, ClientEndpoint, Connection, HostEndpoint, PenChannel};
 pub use framing::{Control, ControlReceiver, ControlSender};
 pub use identity::{Fingerprint, Identity};
 pub use pairing::{PairingOffer, PairingOfferError, PairingSecret};
+pub use video::{VideoReceiver, VideoSender};
 
 /// Errors from the transport layer.
 #[derive(Debug, thiserror::Error)]

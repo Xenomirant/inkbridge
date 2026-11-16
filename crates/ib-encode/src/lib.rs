@@ -8,6 +8,12 @@
 //! B-frames, zero lookahead, no frame queue (one frame in flight),
 //! intra-refresh instead of periodic large keyframes. See ADR-0005.
 
+mod openh264;
+mod scale;
+
+pub use crate::openh264::OpenH264Encoder;
+pub use scale::{fit_within, scale_bgra};
+
 use ib_capture::Frame;
 use ib_protocol::{FrameKind, VideoCodec};
 

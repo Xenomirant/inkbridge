@@ -11,5 +11,6 @@ pub mod platform;
 pub mod server;
 pub mod storage;
 pub mod touch;
+pub mod video;
 
 pub use server::{Host, HostConfig};

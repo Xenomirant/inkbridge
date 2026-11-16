@@ -8,6 +8,17 @@
 //! accurate). [`LatencyStats`] keeps rolling percentiles per pipeline stage.
 
 use std::collections::VecDeque;
+use std::sync::OnceLock;
+use std::time::Instant;
+
+/// Process-wide monotonic clock in microseconds. Every component on one
+/// device stamps with this, so per-stage durations can be subtracted
+/// directly; [`ClockSync`] relates the clocks of different devices.
+pub fn now_us() -> u64 {
+    static START: OnceLock<Instant> = OnceLock::new();
+    let start = START.get_or_init(Instant::now);
+    u64::try_from(start.elapsed().as_micros()).unwrap_or(u64::MAX)
+}
 
 /// One completed ping/pong exchange, all in microseconds.
 ///

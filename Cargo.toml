@@ -20,6 +20,7 @@ ib-transport = { path = "crates/ib-transport" }
 ib-session = { path = "crates/ib-session" }
 ib-inject = { path = "crates/ib-inject" }
 ib-clock = { path = "crates/ib-clock" }
+ib-encode = { path = "crates/ib-encode" }
 
 # External crates (versions pinned centrally)
 serde = { version = "1", features = ["derive"] }
@@ -42,6 +43,9 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 directories = "6"
 qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 if-addrs = "0.15"
+# Software H.264 (Cisco, BSD-2-Clause), built from source: universal fallback encoder.
+openh264 = "0.9.10"
+windows-capture = "2.0.1"
 # Rust <-> Kotlin/Swift bindings; pre-1.0, so pinned to a minor version (ADR-0001).
 uniffi = "=0.32.2"
 

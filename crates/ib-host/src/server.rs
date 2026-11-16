@@ -4,13 +4,26 @@ use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::sync::mpsc::Sender;
 
-use ib_protocol::{Capabilities, ControlMessage, PenFeatures, Region, TransportKind};
+use ib_protocol::{
+    Capabilities, ControlMessage, PenFeatures, Region, TransportKind, VideoChunk, VideoCodec,
+};
 use ib_session::{HostSettings, PairingStore, host_handshake};
 use ib_transport::{Connection, HostEndpoint, Identity, PairingOffer, PairingSecret};
 use tokio::sync::Mutex;
 
 use crate::clock::now_us;
 use crate::pen_thread::PenInput;
+use crate::video::VideoPipeline;
+
+/// Encoded frames waiting for the network. Small on purpose: a deep queue is
+/// latency; when it's full the pipeline skips to a keyframe instead.
+const VIDEO_QUEUE: usize = 3;
+
+/// Per-session resources, released when the session ends.
+#[derive(Debug, Default)]
+struct SessionState {
+    video: Option<VideoPipeline>,
+}
 
 #[derive(Debug, Clone)]
 pub struct HostConfig {
@@ -18,6 +31,8 @@ pub struct HostConfig {
     pub bind: SocketAddr,
     pub region: Region,
     pub pen_features: PenFeatures,
+    /// Whether screen streaming is available on this host.
+    pub video: bool,
 }
 
 /// A running host: endpoint, paired devices and the current pairing secret.
@@ -112,10 +127,14 @@ impl Host {
         let settings = HostSettings {
             host_name: self.config.host_name.clone(),
             caps: Capabilities {
-                video_codecs: vec![], // M1: pen-only sessions
+                video_codecs: if self.config.video {
+                    vec![VideoCodec::H264]
+                } else {
+                    vec![]
+                },
                 max_width: self.config.region.width,
                 max_height: self.config.region.height,
-                max_fps: 0,
+                max_fps: 60,
                 pen: self.config.pen_features,
             },
             region: self.config.region,
@@ -134,8 +153,30 @@ impl Host {
             *self.pairing.lock().await = None;
         }
         tracing::info!(device = %hello.device_name, "session started");
-        self.apply_viewport(&mut ctl, hello.screen_width, hello.screen_height)
+        let region = self
+            .apply_viewport(&mut ctl, hello.screen_width, hello.screen_height)
             .await?;
+
+        // Video: only if both sides support it (codec negotiated).
+        let mut session = SessionState::default();
+        let mut video_task = None;
+        if settings.caps.negotiate_codec(&hello.caps).is_some() {
+            let (tx, mut rx) = tokio::sync::mpsc::channel::<VideoChunk>(VIDEO_QUEUE);
+            match VideoPipeline::start(region, (hello.caps.max_width, hello.caps.max_height), tx) {
+                Ok(p) => {
+                    session.video = Some(p);
+                    let conn = conn.clone();
+                    video_task = Some(tokio::spawn(async move {
+                        let mut stream = conn.open_video().await?;
+                        while let Some(chunk) = rx.recv().await {
+                            stream.send(&chunk).await?;
+                        }
+                        Ok::<_, ib_transport::TransportError>(())
+                    }));
+                }
+                Err(e) => tracing::warn!("screen streaming unavailable: {e:#}"),
+            }
+        }
 
         // Datagrams → pen thread, on their own task.
         let pen_rx = conn.pen();
@@ -148,8 +189,12 @@ impl Host {
             }
         });
 
-        let result = self.control_loop(&mut ctl).await;
+        let result = self.control_loop(&mut ctl, &mut session).await;
         datagrams.abort();
+        drop(session); // stops capture and encoding
+        if let Some(t) = video_task {
+            t.abort();
+        }
         result?;
         Ok(newly_paired.then_some(hello.device_name))
     }
@@ -161,15 +206,19 @@ impl Host {
         ctl: &mut ib_transport::Control,
         width: u32,
         height: u32,
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<Region> {
         let region = ib_geometry::region_for_viewport(self.config.region, width, height);
         tracing::info!(width, height, ?region, "tablet viewport");
         let _ = self.pen.send(PenInput::SetRegion(region));
         ctl.send(&ControlMessage::SetRegion(region)).await?;
-        Ok(())
+        Ok(region)
     }
 
-    async fn control_loop(&self, ctl: &mut ib_transport::Control) -> anyhow::Result<()> {
+    async fn control_loop(
+        &self,
+        ctl: &mut ib_transport::Control,
+        session: &mut SessionState,
+    ) -> anyhow::Result<()> {
         loop {
             match ctl.recv().await? {
                 ControlMessage::PenTransition(s) => {
@@ -188,7 +237,15 @@ impl Host {
                     let _ = self.pen.send(PenInput::Touch(contacts));
                 }
                 ControlMessage::Viewport { width, height } => {
-                    self.apply_viewport(ctl, width, height).await?;
+                    let region = self.apply_viewport(ctl, width, height).await?;
+                    if let Some(v) = &session.video {
+                        v.set_region(region);
+                    }
+                }
+                ControlMessage::RequestKeyframe => {
+                    if let Some(v) = &session.video {
+                        v.request_keyframe();
+                    }
                 }
                 ControlMessage::Goodbye => return Ok(()),
                 other => tracing::debug!(?other, "ignored control message"),
