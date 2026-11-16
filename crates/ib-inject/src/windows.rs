@@ -20,6 +20,9 @@ use windows::Win32::UI::Controls::{
     CreateSyntheticPointerDevice, DestroySyntheticPointerDevice, HSYNTHETICPOINTERDEVICE,
     POINTER_FEEDBACK_DEFAULT, POINTER_TYPE_INFO, POINTER_TYPE_INFO_0,
 };
+use windows::Win32::UI::Input::KeyboardAndMouse::{
+    INPUT, INPUT_0, INPUT_MOUSE, MOUSEEVENTF_HWHEEL, MOUSEEVENTF_WHEEL, MOUSEINPUT, SendInput,
+};
 use windows::Win32::UI::Input::Pointer::{
     InjectSyntheticPointerInput, POINTER_CHANGE_FIRSTBUTTON_DOWN, POINTER_CHANGE_FIRSTBUTTON_UP,
     POINTER_CHANGE_NONE, POINTER_FLAG_DOWN, POINTER_FLAG_FIRSTBUTTON, POINTER_FLAG_INCONTACT,
@@ -37,11 +40,18 @@ use crate::{InjectError, PenSink};
 /// Windows reports pen pressure in `0..=1024`.
 const MAX_PRESSURE: f32 = 1024.0;
 
+/// Wheel units per pixel of finger movement. One notch (`WHEEL_DELTA` = 120)
+/// scrolls roughly 100 px in most apps, so content tracks the fingers.
+const WHEEL_PER_PX: f64 = 1.2;
+
 #[derive(Debug)]
 pub struct WindowsPenSink {
     device: HSYNTHETICPOINTERDEVICE,
     tracker: PenTracker,
     last_point: POINT,
+    /// Fractional wheel units not yet sent (smooth scrolling sends
+    /// sub-notch amounts; apps without high-resolution support accumulate).
+    wheel_rest: (f64, f64),
 }
 
 // SAFETY: a synthetic pointer device handle is a process-wide user32 object,
@@ -61,6 +71,7 @@ impl WindowsPenSink {
             device,
             tracker: PenTracker::new(),
             last_point: POINT::default(),
+            wheel_rest: (0.0, 0.0),
         })
     }
 
@@ -159,6 +170,46 @@ impl PenSink for WindowsPenSink {
             self.inject(step, sample, point)?;
         }
         Ok(())
+    }
+
+    fn scroll(&mut self, dx_px: f64, dy_px: f64) -> Result<(), InjectError> {
+        // Fingers down → content down → wheel up (positive). Fingers right →
+        // content right → scroll left (negative horizontal wheel).
+        let wy = self.wheel_rest.1 + dy_px * WHEEL_PER_PX;
+        let wx = self.wheel_rest.0 - dx_px * WHEEL_PER_PX;
+        let (iy, ix) = (wy.trunc() as i32, wx.trunc() as i32);
+        self.wheel_rest = (wx - f64::from(ix), wy - f64::from(iy));
+        let wheel = |amount: i32, flags| INPUT {
+            r#type: INPUT_MOUSE,
+            Anonymous: INPUT_0 {
+                mi: MOUSEINPUT {
+                    mouseData: amount.cast_unsigned(),
+                    dwFlags: flags,
+                    ..Default::default()
+                },
+            },
+        };
+        let mut inputs = Vec::with_capacity(2);
+        if iy != 0 {
+            inputs.push(wheel(iy, MOUSEEVENTF_WHEEL));
+        }
+        if ix != 0 {
+            inputs.push(wheel(ix, MOUSEEVENTF_HWHEEL));
+        }
+        if inputs.is_empty() {
+            return Ok(());
+        }
+        // INPUT is a few dozen bytes; the size always fits in i32.
+        let size = i32::try_from(size_of::<INPUT>()).expect("INPUT size fits in i32");
+        // SAFETY: `inputs` is a valid slice of fully initialised INPUT records.
+        let sent = unsafe { SendInput(&inputs, size) };
+        if sent as usize == inputs.len() {
+            Ok(())
+        } else {
+            Err(InjectError::Rejected(
+                "SendInput dropped scroll events".into(),
+            ))
+        }
     }
 
     fn release(&mut self) -> Result<(), InjectError> {

@@ -17,6 +17,11 @@ pub enum PenInput {
     Batch(PenBatch),
     Transition(PenSample),
     SetRegion(Region),
+    /// Two-finger scroll in region-normalised units.
+    Scroll {
+        dx: f32,
+        dy: f32,
+    },
     /// The tablet disconnected: release the pen and reset sequence state.
     Disconnected,
     Shutdown,
@@ -65,6 +70,15 @@ fn run(mut sink: Box<dyn PenSink>, mut region: Region, rx: &Receiver<PenInput>) 
                 }
             }
             PenInput::SetRegion(r) => region = r,
+            PenInput::Scroll { dx, dy } => {
+                let (dx, dy) = (f64::from(dx), f64::from(dy));
+                if dx.is_finite() && dy.is_finite() {
+                    let px = (dx * f64::from(region.width), dy * f64::from(region.height));
+                    if let Err(e) = sink.scroll(px.0, px.1) {
+                        tracing::debug!("{e}");
+                    }
+                }
+            }
             PenInput::Disconnected => {
                 if stream.release().is_some()
                     && let Err(e) = sink.release()

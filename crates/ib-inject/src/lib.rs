@@ -58,6 +58,14 @@ pub trait PenSink: Send {
     /// Injects one sanitised sample at a desktop position.
     fn emit(&mut self, sample: &PenSample, at: DesktopPoint) -> Result<(), InjectError>;
 
+    /// Scrolls by a finger movement given in desktop pixels (positive `dy`
+    /// = fingers moved down = scroll up), at the current pointer position.
+    fn scroll(&mut self, _dx_px: f64, _dy_px: f64) -> Result<(), InjectError> {
+        Err(InjectError::Unavailable(
+            "scrolling not supported by this backend".into(),
+        ))
+    }
+
     /// Lifts the pen and leaves proximity. Called on disconnect, session end
     /// and errors, so no button or contact can stay "stuck" on the desktop.
     fn release(&mut self) -> Result<(), InjectError>;
@@ -67,6 +75,7 @@ pub trait PenSink: Send {
 #[derive(Debug, Default)]
 pub struct FakePenSink {
     pub events: Vec<(PenSample, DesktopPoint)>,
+    pub scrolls: Vec<(f64, f64)>,
     pub releases: usize,
 }
 
@@ -88,6 +97,11 @@ impl PenSink for FakePenSink {
 
     fn emit(&mut self, sample: &PenSample, at: DesktopPoint) -> Result<(), InjectError> {
         self.events.push((*sample, at));
+        Ok(())
+    }
+
+    fn scroll(&mut self, dx_px: f64, dy_px: f64) -> Result<(), InjectError> {
+        self.scrolls.push((dx_px, dy_px));
         Ok(())
     }
 

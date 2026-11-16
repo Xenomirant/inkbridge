@@ -327,6 +327,14 @@ impl Session {
             .map_err(|_| InkbridgeError::Transport("session closed".into()))
     }
 
+    /// Two-finger scroll: finger movement as a fraction of the drawing area
+    /// (positive `dy` = fingers moved down). Never blocks.
+    pub fn send_scroll(&self, dx: f32, dy: f32) -> Result<(), InkbridgeError> {
+        self.control_tx
+            .send(ControlMessage::Scroll { dx, dy })
+            .map_err(|_| InkbridgeError::Transport("session closed".into()))
+    }
+
     /// Smoothed network round-trip time in microseconds.
     pub fn rtt_us(&self) -> u64 {
         u64::try_from(self.connection.rtt().as_micros()).unwrap_or(u64::MAX)

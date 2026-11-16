@@ -85,6 +85,13 @@ pub enum ControlMessage {
     /// Pen contact/tool/button transitions, mirrored reliably so state can
     /// never get stuck if the corresponding datagram is lost.
     PenTransition(PenSample),
+    /// Two-finger scroll: finger movement since the last message, as a
+    /// fraction of the streamed region (same units as pen coordinates).
+    /// Positive `dy` = fingers moved down = content follows them (scroll up).
+    Scroll {
+        dx: f32,
+        dy: f32,
+    },
     /// Ask the host for an immediate keyframe (decoder reset, packet loss).
     RequestKeyframe,
     /// Bitrate hint from the client's congestion estimate, kbit/s.

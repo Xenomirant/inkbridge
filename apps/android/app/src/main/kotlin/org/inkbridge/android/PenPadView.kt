@@ -36,6 +36,10 @@ class PenPadView(context: Context, private val session: Session) : View(context)
     private var lastX = Float.NaN
     private var lastY = Float.NaN
 
+    /** Two-finger scroll state: previous centroid, or NaN when not scrolling. */
+    private var scrollX = Float.NaN
+    private var scrollY = Float.NaN
+
     /** Last state sent reliably; a change triggers a transition message. */
     private var lastContact: PenContact? = null
     private var lastEraser = false
@@ -71,7 +75,7 @@ class PenPadView(context: Context, private val session: Session) : View(context)
 
     override fun onTouchEvent(ev: MotionEvent): Boolean {
         val i = StylusMapper.stylusIndex(ev)
-        if (i < 0) return false // finger or palm: ignored
+        if (i < 0) return onFingers(ev)
         if (ev.actionMasked == MotionEvent.ACTION_DOWN) {
             removeCallbacks(outOfRange)
             requestUnbufferedDispatch(ev) // full sample rate, no 60 Hz batching
@@ -85,6 +89,29 @@ class PenPadView(context: Context, private val session: Session) : View(context)
         val samples = StylusMapper.samples(ev, i, area, contact)
         emit(samples)
         drawLocal(ev, i, contact)
+        return true
+    }
+
+    /**
+     * Fingers: two-finger drag scrolls the computer; a single finger or a
+     * resting palm does nothing (palm rejection while writing).
+     */
+    private fun onFingers(ev: MotionEvent): Boolean {
+        val fingers = (0 until ev.pointerCount).filter { ev.getToolType(it) == MotionEvent.TOOL_TYPE_FINGER }
+        val lifting = ev.actionMasked == MotionEvent.ACTION_POINTER_UP
+        val active = if (lifting) fingers.filter { it != ev.actionIndex } else fingers
+        if (active.size != 2 || ev.actionMasked == MotionEvent.ACTION_UP || ev.actionMasked == MotionEvent.ACTION_CANCEL) {
+            scrollX = Float.NaN; scrollY = Float.NaN
+            return true
+        }
+        val cx = active.map { ev.getX(it) }.average().toFloat()
+        val cy = active.map { ev.getY(it) }.average().toFloat()
+        if (!scrollX.isNaN() && ev.actionMasked == MotionEvent.ACTION_MOVE && area.width() > 0f) {
+            val dx = (cx - scrollX) / area.width()
+            val dy = (cy - scrollY) / area.height()
+            if (dx != 0f || dy != 0f) runCatching { session.sendScroll(dx, dy) }
+        }
+        scrollX = cx; scrollY = cy
         return true
     }
 
