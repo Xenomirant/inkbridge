@@ -20,6 +20,10 @@ use windows::Win32::UI::Controls::{
     CreateSyntheticPointerDevice, DestroySyntheticPointerDevice, HSYNTHETICPOINTERDEVICE,
     POINTER_FEEDBACK_DEFAULT, POINTER_TYPE_INFO, POINTER_TYPE_INFO_0,
 };
+use windows::Win32::UI::Input::KeyboardAndMouse::{
+    INPUT, INPUT_0, INPUT_MOUSE, MOUSE_EVENT_FLAGS, MOUSEEVENTF_ABSOLUTE, MOUSEEVENTF_HWHEEL,
+    MOUSEEVENTF_MOVE, MOUSEEVENTF_VIRTUALDESK, MOUSEEVENTF_WHEEL, MOUSEINPUT, SendInput,
+};
 use windows::Win32::UI::Input::Pointer::{
     InjectSyntheticPointerInput, POINTER_CHANGE_FIRSTBUTTON_DOWN, POINTER_CHANGE_FIRSTBUTTON_UP,
     POINTER_CHANGE_NONE, POINTER_FLAG_CANCELED, POINTER_FLAG_DOWN, POINTER_FLAG_FIRSTBUTTON,
@@ -27,8 +31,9 @@ use windows::Win32::UI::Input::Pointer::{
     POINTER_FLAG_UPDATE, POINTER_FLAGS, POINTER_INFO, POINTER_PEN_INFO, POINTER_TOUCH_INFO,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    PEN_FLAG_BARREL, PEN_FLAG_ERASER, PEN_FLAG_INVERTED, PEN_MASK_PRESSURE, PEN_MASK_ROTATION,
-    PEN_MASK_TILT_X, PEN_MASK_TILT_Y, PT_PEN, PT_TOUCH, TOUCH_MASK_CONTACTAREA,
+    GetSystemMetrics, PEN_FLAG_BARREL, PEN_FLAG_ERASER, PEN_FLAG_INVERTED, PEN_MASK_PRESSURE,
+    PEN_MASK_ROTATION, PEN_MASK_TILT_X, PEN_MASK_TILT_Y, PT_PEN, PT_TOUCH, SM_CXVIRTUALSCREEN,
+    SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, TOUCH_MASK_CONTACTAREA,
 };
 
 use crate::tracker::{PenTracker, Step};
@@ -37,6 +42,11 @@ use ib_protocol::TouchPhase;
 
 /// Windows reports pen pressure in `0..=1024`.
 const MAX_PRESSURE: f32 = 1024.0;
+
+/// Wheel units per pixel of content movement. One notch (`WHEEL_DELTA` =
+/// 120) scrolls about 100 px in most apps, so content tracks the fingers;
+/// modern apps honour sub-notch (high-resolution) amounts.
+const WHEEL_PER_PX: f64 = 1.2;
 
 /// Maximum simultaneous fingers on the synthetic touch device.
 const MAX_TOUCHES: u32 = ib_protocol::TouchContact::MAX as u32;
@@ -48,6 +58,9 @@ pub struct WindowsPenSink {
     last_point: POINT,
     /// Synthetic touch device, created on first use.
     touch_device: Option<HSYNTHETICPOINTERDEVICE>,
+    /// Wheel units not sent yet (apps without high-resolution support act
+    /// on whole notches; the remainder carries over).
+    wheel_rest: (f64, f64),
 }
 
 // SAFETY: a synthetic pointer device handle is a process-wide user32 object,
@@ -68,6 +81,7 @@ impl WindowsPenSink {
             tracker: PenTracker::new(),
             last_point: POINT::default(),
             touch_device: None,
+            wheel_rest: (0.0, 0.0),
         })
     }
 
@@ -274,6 +288,44 @@ impl PenSink for WindowsPenSink {
             .map_err(|e| InjectError::Rejected(e.to_string()))
     }
 
+    fn scroll(&mut self, dx_px: f64, dy_px: f64) -> Result<(), InjectError> {
+        // Content down → wheel up (positive); content right → scroll left
+        // (negative horizontal wheel).
+        let wy = self.wheel_rest.1 + dy_px * WHEEL_PER_PX;
+        let wx = self.wheel_rest.0 - dx_px * WHEEL_PER_PX;
+        let (iy, ix) = (wy.trunc() as i32, wx.trunc() as i32);
+        self.wheel_rest = (wx - f64::from(ix), wy - f64::from(iy));
+        let mut inputs = Vec::with_capacity(2);
+        if iy != 0 {
+            inputs.push(mouse_input(0, 0, iy.cast_unsigned(), MOUSEEVENTF_WHEEL));
+        }
+        if ix != 0 {
+            inputs.push(mouse_input(0, 0, ix.cast_unsigned(), MOUSEEVENTF_HWHEEL));
+        }
+        send_inputs(&inputs)
+    }
+
+    fn move_pointer(&mut self, at: DesktopPoint) -> Result<(), InjectError> {
+        // Absolute coordinates are normalised to 0..=65535 over the virtual desktop.
+        // SAFETY: plain FFI calls without pointers.
+        let (vx, vy, vw, vh) = unsafe {
+            (
+                GetSystemMetrics(SM_XVIRTUALSCREEN),
+                GetSystemMetrics(SM_YVIRTUALSCREEN),
+                GetSystemMetrics(SM_CXVIRTUALSCREEN).max(1),
+                GetSystemMetrics(SM_CYVIRTUALSCREEN).max(1),
+            )
+        };
+        let nx = ((at.x - f64::from(vx)) * 65535.0 / f64::from(vw - 1).max(1.0)).round() as i32;
+        let ny = ((at.y - f64::from(vy)) * 65535.0 / f64::from(vh - 1).max(1.0)).round() as i32;
+        send_inputs(&[mouse_input(
+            nx,
+            ny,
+            0,
+            MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK,
+        )])
+    }
+
     fn release(&mut self) -> Result<(), InjectError> {
         let leave = PenSample {
             state: ib_protocol::PenState::OutOfRange,
@@ -296,5 +348,37 @@ impl Drop for WindowsPenSink {
             // SAFETY: created once by CreateSyntheticPointerDevice, destroyed once.
             unsafe { DestroySyntheticPointerDevice(d) };
         }
+    }
+}
+
+fn mouse_input(dx: i32, dy: i32, data: u32, flags: MOUSE_EVENT_FLAGS) -> INPUT {
+    INPUT {
+        r#type: INPUT_MOUSE,
+        Anonymous: INPUT_0 {
+            mi: MOUSEINPUT {
+                dx,
+                dy,
+                mouseData: data,
+                dwFlags: flags,
+                ..Default::default()
+            },
+        },
+    }
+}
+
+fn send_inputs(inputs: &[INPUT]) -> Result<(), InjectError> {
+    if inputs.is_empty() {
+        return Ok(());
+    }
+    // INPUT is a few dozen bytes; the size always fits in i32.
+    let size = i32::try_from(size_of::<INPUT>()).expect("INPUT size fits in i32");
+    // SAFETY: `inputs` is a valid slice of fully initialised INPUT records.
+    let sent = unsafe { SendInput(inputs, size) };
+    if sent as usize == inputs.len() {
+        Ok(())
+    } else {
+        Err(InjectError::Rejected(
+            "SendInput dropped input events".into(),
+        ))
     }
 }

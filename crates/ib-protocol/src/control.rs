@@ -117,10 +117,22 @@ pub enum ControlMessage {
     /// Pen contact/tool/button transitions, mirrored reliably so state can
     /// never get stuck if the corresponding datagram is lost.
     PenTransition(PenSample),
-    /// Multi-finger gesture frame (pan/scroll, pinch-zoom), injected as
-    /// native touch so the host OS applies its own panning and inertia.
-    /// Every frame lists all fingers of the gesture.
+    /// Multi-finger pinch/zoom frame, injected as native touch so the host
+    /// OS zooms around the fingers. Every frame lists all fingers.
     Touch(Vec<TouchContact>),
+    /// Two-finger scroll, touchpad style. `x`/`y`: centroid of the fingers,
+    /// `dx`/`dy`: movement since the previous message (fingers down = positive
+    /// `dy`), all normalised to the region like pen coordinates. `t_us` is
+    /// the tablet's timestamp (velocity for acceleration and inertia);
+    /// `end` marks the fingers lifting.
+    Scroll {
+        x: f32,
+        y: f32,
+        dx: f32,
+        dy: f32,
+        t_us: u64,
+        end: bool,
+    },
     /// Ask the host for an immediate keyframe (decoder reset, packet loss).
     RequestKeyframe,
     /// Bitrate hint from the client's congestion estimate, kbit/s.

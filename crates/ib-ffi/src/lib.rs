@@ -470,9 +470,34 @@ impl Session {
             .map_err(|_| InkbridgeError::Transport("session closed".into()))
     }
 
+    /// Two-finger scroll, touchpad style: centroid (`x`, `y`) and movement
+    /// since the last call (`dx`, `dy`), normalised to the drawing area;
+    /// `t_us` is the event time; `end` when the fingers lift. The computer
+    /// applies acceleration and inertia. Never blocks.
+    pub fn send_scroll(
+        &self,
+        x: f32,
+        y: f32,
+        dx: f32,
+        dy: f32,
+        t_us: u64,
+        end: bool,
+    ) -> Result<(), InkbridgeError> {
+        self.control_tx
+            .send(ControlMessage::Scroll {
+                x,
+                y,
+                dx,
+                dy,
+                t_us,
+                end,
+            })
+            .map_err(|_| InkbridgeError::Transport("session closed".into()))
+    }
+
     /// Sends one multi-finger gesture frame (all fingers of the gesture).
-    /// The computer injects it as native touch: panning with inertia,
-    /// pinch-zoom. Never blocks.
+    /// The computer injects it as native touch (used for pinch-zoom).
+    /// Never blocks.
     pub fn send_touch(&self, fingers: Vec<Finger>) -> Result<(), InkbridgeError> {
         let contacts = fingers
             .into_iter()

@@ -8,6 +8,7 @@ pub mod clock;
 pub mod pairing_page;
 pub mod pen_thread;
 pub mod platform;
+pub mod scroll;
 pub mod server;
 pub mod storage;
 pub mod touch;

@@ -246,6 +246,23 @@ impl Host {
                 ControlMessage::Touch(contacts) => {
                     let _ = self.pen.send(PenInput::Touch(contacts));
                 }
+                ControlMessage::Scroll {
+                    x,
+                    y,
+                    dx,
+                    dy,
+                    t_us,
+                    end,
+                } => {
+                    let _ = self.pen.send(PenInput::Scroll {
+                        x,
+                        y,
+                        dx,
+                        dy,
+                        t_us,
+                        end,
+                    });
+                }
                 ControlMessage::Viewport { width, height } => {
                     let region = self.apply_viewport(ctl, width, height).await?;
                     if let Some(v) = &session.video {

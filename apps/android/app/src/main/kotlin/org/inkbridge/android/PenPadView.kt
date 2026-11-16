@@ -63,6 +63,9 @@ class PenPadView(context: Context, private val session: Session) : View(context)
     private var startAx = 0f; private var startAy = 0f
     private var startBx = 0f; private var startBy = 0f
     private var lastFrame: List<Finger> = emptyList()
+    /** Last centroid sent while scrolling (view pixels). */
+    private var lastCx = 0f
+    private var lastCy = 0f
     private val pxPerMm = resources.displayMetrics.xdpi / 25.4f
 
     /** Last state sent reliably; a change triggers a transition message. */
@@ -202,23 +205,45 @@ class PenPadView(context: Context, private val session: Session) : View(context)
             val spreadChange = abs(hypot(bx - ax, by - ay) - hypot(startBx - startAx, startBy - startAy))
             if (maxOf(translation, spreadChange) < GESTURE_SLOP_MM * pxPerMm) return true
             mode = if (spreadChange > translation) Mode.ZOOM else Mode.PAN
-            send(listOf(wire(0, startAx, startAy, FingerPhase.DOWN), wire(1, startBx, startBy, FingerPhase.DOWN)))
+            if (mode == Mode.ZOOM) {
+                send(listOf(wire(0, startAx, startAy, FingerPhase.DOWN), wire(1, startBx, startBy, FingerPhase.DOWN)))
+            } else {
+                // Scrolling starts from where the fingers first touched.
+                lastCx = (startAx + startBx) / 2; lastCy = (startAy + startBy) / 2
+            }
         }
-        val frame = if (mode == Mode.PAN) {
-            // Keep the start separation: only the centroid moves.
-            val dcx = (ax + bx - startAx - startBx) / 2
-            val dcy = (ay + by - startAy - startBy) / 2
-            listOf(wire(0, startAx + dcx, startAy + dcy, FingerPhase.MOVE), wire(1, startBx + dcx, startBy + dcy, FingerPhase.MOVE))
+        if (mode == Mode.PAN) {
+            // Touchpad-style scroll: the centroid's movement, with the event
+            // time so the computer can compute speed (acceleration, inertia).
+            val cx = (ax + bx) / 2; val cy = (ay + by) / 2
+            sendScroll(cx, cy, cx - lastCx, cy - lastCy, StylusMapper.timestampUs(ev, -1), end = false)
+            lastCx = cx; lastCy = cy
         } else {
-            listOf(wire(0, ax, ay, FingerPhase.MOVE), wire(1, bx, by, FingerPhase.MOVE))
+            send(listOf(wire(0, ax, ay, FingerPhase.MOVE), wire(1, bx, by, FingerPhase.MOVE)))
         }
-        send(frame)
         return true
+    }
+
+    private fun sendScroll(cx: Float, cy: Float, dx: Float, dy: Float, tUs: Long, end: Boolean) {
+        if (area.width() <= 0f) return
+        runCatching {
+            session.sendScroll(
+                ((cx - area.left) / area.width()).coerceIn(0f, 1f),
+                ((cy - area.top) / area.height()).coerceIn(0f, 1f),
+                dx / area.width(), dy / area.height(), tUs.toULong(), end,
+            )
+        }
     }
 
     /** Lifts (or cancels) both fingers where they were last sent. */
     private fun endGesture(phase: FingerPhase) {
-        if (mode == Mode.PAN || mode == Mode.ZOOM) send(lastFrame.map { it.copy(phase = phase) })
+        when (mode) {
+            // Lift: the computer decides whether to coast (inertia). A cancel
+            // (pen touched down) is a lift too; the pen stops any inertia.
+            Mode.PAN -> sendScroll(lastCx, lastCy, 0f, 0f, android.os.SystemClock.uptimeMillis() * 1000, end = true)
+            Mode.ZOOM -> send(lastFrame.map { it.copy(phase = phase) })
+            else -> {}
+        }
         mode = Mode.NONE
         lastFrame = emptyList()
     }

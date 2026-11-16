@@ -74,7 +74,8 @@ object StylusMapper {
     private fun normalise(v: Float, origin: Float, size: Float): Float =
         if (size <= 0f) 0f else ((v - origin) / size).coerceIn(0f, 1f)
 
-    private fun timestampUs(ev: MotionEvent, pos: Int): Long =
+    /** Event time in µs (the same monotonic clock as `SystemClock.uptimeMillis`). */
+    fun timestampUs(ev: MotionEvent, pos: Int): Long =
         if (Build.VERSION.SDK_INT >= 34) {
             (if (pos < 0) ev.eventTimeNanos else ev.getHistoricalEventTimeNanos(pos)) / 1_000
         } else {

@@ -74,6 +74,21 @@ pub trait PenSink: Send {
         ))
     }
 
+    /// Scrolls the window under the pointer by a content movement in desktop
+    /// pixels (positive `dy` = content moves down, i.e. scroll up; positive
+    /// `dx` = content moves right, i.e. scroll left).
+    fn scroll(&mut self, _dx_px: f64, _dy_px: f64) -> Result<(), InjectError> {
+        Err(InjectError::Unavailable(
+            "scrolling not supported by this backend".into(),
+        ))
+    }
+
+    /// Moves the mouse pointer (so scrolling targets the window under the
+    /// fingers).
+    fn move_pointer(&mut self, _at: DesktopPoint) -> Result<(), InjectError> {
+        Ok(())
+    }
+
     /// Lifts the pen and leaves proximity. Called on disconnect, session end
     /// and errors, so no button or contact can stay "stuck" on the desktop.
     fn release(&mut self) -> Result<(), InjectError>;
@@ -84,6 +99,8 @@ pub trait PenSink: Send {
 pub struct FakePenSink {
     pub events: Vec<(PenSample, DesktopPoint)>,
     pub touch_frames: Vec<Vec<TouchPoint>>,
+    pub scrolls: Vec<(f64, f64)>,
+    pub pointer_moves: Vec<DesktopPoint>,
     pub releases: usize,
 }
 
@@ -110,6 +127,16 @@ impl PenSink for FakePenSink {
 
     fn touch(&mut self, frame: &[TouchPoint]) -> Result<(), InjectError> {
         self.touch_frames.push(frame.to_vec());
+        Ok(())
+    }
+
+    fn scroll(&mut self, dx_px: f64, dy_px: f64) -> Result<(), InjectError> {
+        self.scrolls.push((dx_px, dy_px));
+        Ok(())
+    }
+
+    fn move_pointer(&mut self, at: DesktopPoint) -> Result<(), InjectError> {
+        self.pointer_moves.push(at);
         Ok(())
     }
 
