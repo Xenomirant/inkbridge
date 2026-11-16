@@ -15,9 +15,10 @@ use ib_encode::{EncoderConfig, OpenH264Encoder, VideoEncoder, fit_within, scale_
 use ib_protocol::{Region, VideoChunk, VideoCodec};
 use tokio::sync::mpsc::error::TrySendError;
 
-/// The software path is CPU-bound: cap its resolution (the hardware path in
-/// M2b streams at full resolution).
-const SOFTWARE_MAX: (u32, u32) = (1920, 1200);
+/// The software path is CPU-bound: cap its pixel count (≈1080p). A budget
+/// rather than per-side limits, so a portrait strip (e.g. 900×1440) keeps
+/// its full resolution. The hardware path (M2b) streams at full size.
+const SOFTWARE_MAX_PIXELS: u64 = 1920 * 1088;
 const FPS: u16 = 60;
 
 #[derive(Debug)]
@@ -86,11 +87,18 @@ impl Drop for VideoPipeline {
 
 /// Encoder for the given capture region.
 fn encoder_for(region: Region, client_max: (u32, u32)) -> anyhow::Result<OpenH264Encoder> {
-    let max = (
-        client_max.0.min(SOFTWARE_MAX.0),
-        client_max.1.min(SOFTWARE_MAX.1),
+    let pixels = u64::from(region.width) * u64::from(region.height);
+    let budget = if pixels > SOFTWARE_MAX_PIXELS {
+        (SOFTWARE_MAX_PIXELS as f64 / pixels as f64).sqrt()
+    } else {
+        1.0
+    };
+    let (width, height) = fit_within(
+        region.width,
+        region.height,
+        ((f64::from(region.width) * budget) as u32).min(client_max.0),
+        ((f64::from(region.height) * budget) as u32).min(client_max.1),
     );
-    let (width, height) = fit_within(region.width, region.height, max.0, max.1);
     // ~6 bits per pixel per second at 60 fps (≈12 Mbit/s at 1080p): generous,
     // because blurry text and strokes are worse than bandwidth on a LAN.
     let bitrate_kbps = (u64::from(width) * u64::from(height) * 6 / 1000) as u32;
@@ -223,6 +231,39 @@ mod tests {
         }
         assert!(got_key, "keyframe request must produce a keyframe");
         drop(p);
+    }
+
+    #[test]
+    fn portrait_strip_keeps_full_resolution_landscape_is_capped() {
+        let strip = encoder_for(
+            Region {
+                x: 830,
+                y: 0,
+                width: 900,
+                height: 1440,
+            },
+            (1920, 1920),
+        )
+        .unwrap();
+        assert_eq!((strip.config().width, strip.config().height), (900, 1440));
+        let full = encoder_for(
+            Region {
+                x: 0,
+                y: 0,
+                width: 2560,
+                height: 1440,
+            },
+            (1920, 1920),
+        )
+        .unwrap();
+        let c = full.config();
+        assert!(u64::from(c.width) * u64::from(c.height) <= SOFTWARE_MAX_PIXELS);
+        assert!(
+            c.width >= 1900,
+            "landscape should stay ~1080p, got {}x{}",
+            c.width,
+            c.height
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]

@@ -135,8 +135,39 @@ impl WindowsPenSink {
         };
         // SAFETY: `device` is valid for the lifetime of `self`; `info` is a
         // fully initialised pen record.
-        unsafe { InjectSyntheticPointerInput(self.device, &[info]) }
-            .map_err(|e| InjectError::Rejected(e.to_string()))
+        unsafe { InjectSyntheticPointerInput(self.device, &[info]) }.map_err(|e| {
+            // Full detail, so a rejection can be diagnosed from the log.
+            InjectError::Rejected(format!(
+                "{e} [step {step:?}, flags {:#x}, pen flags {pen_flags:#x}, at ({}, {}), pressure {pressure}, \
+                 tilt ({}, {}), tool {:?}]",
+                flags.0, point.x, point.y, sample.tilt_x, sample.tilt_y, sample.tool
+            ))
+        })
+    }
+
+    /// Puts Windows' pen back into a known state (not touching, out of
+    /// range) after a rejected event, so the pen can never stay "pressed"
+    /// and turn hover into drags. Errors are ignored: this is best effort.
+    fn resync(&mut self) {
+        let leave = PenSample {
+            state: ib_protocol::PenState::OutOfRange,
+            ..PenSample::default()
+        };
+        let point = self.last_point;
+        let was_down = self.tracker.in_contact();
+        self.tracker = PenTracker::new();
+        if was_down {
+            let _ = self.inject(
+                Step {
+                    in_range: true,
+                    up: true,
+                    ..Step::default()
+                },
+                &leave,
+                point,
+            );
+        }
+        let _ = self.inject(Step::default(), &leave, point);
     }
 }
 
@@ -163,7 +194,10 @@ impl PenSink for WindowsPenSink {
         };
         self.last_point = point;
         for step in self.tracker.step(sample.state) {
-            self.inject(step, sample, point)?;
+            if let Err(e) = self.inject(step, sample, point) {
+                self.resync();
+                return Err(e);
+            }
         }
         Ok(())
     }
