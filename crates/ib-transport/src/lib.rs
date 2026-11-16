@@ -21,7 +21,7 @@ mod pairing;
 mod tls;
 
 pub use endpoint::{ALPN, ClientEndpoint, Connection, HostEndpoint, PenChannel};
-pub use framing::Control;
+pub use framing::{Control, ControlReceiver, ControlSender};
 pub use identity::{Fingerprint, Identity};
 pub use pairing::{PairingOffer, PairingOfferError, PairingSecret};
 

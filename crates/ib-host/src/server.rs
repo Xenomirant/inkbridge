@@ -134,6 +134,8 @@ impl Host {
             *self.pairing.lock().await = None;
         }
         tracing::info!(device = %hello.device_name, "session started");
+        self.apply_viewport(&mut ctl, hello.screen_width, hello.screen_height)
+            .await?;
 
         // Datagrams → pen thread, on their own task.
         let pen_rx = conn.pen();
@@ -150,6 +152,21 @@ impl Host {
         datagrams.abort();
         result?;
         Ok(newly_paired.then_some(hello.device_name))
+    }
+
+    /// Picks the desktop region for the tablet's current viewport and tells
+    /// both the pen thread and the tablet.
+    async fn apply_viewport(
+        &self,
+        ctl: &mut ib_transport::Control,
+        width: u32,
+        height: u32,
+    ) -> anyhow::Result<()> {
+        let region = ib_geometry::region_for_viewport(self.config.region, width, height);
+        tracing::info!(width, height, ?region, "tablet viewport");
+        let _ = self.pen.send(PenInput::SetRegion(region));
+        ctl.send(&ControlMessage::SetRegion(region)).await?;
+        Ok(())
     }
 
     async fn control_loop(&self, ctl: &mut ib_transport::Control) -> anyhow::Result<()> {
@@ -169,6 +186,9 @@ impl Host {
                 }
                 ControlMessage::Touch(contacts) => {
                     let _ = self.pen.send(PenInput::Touch(contacts));
+                }
+                ControlMessage::Viewport { width, height } => {
+                    self.apply_viewport(ctl, width, height).await?;
                 }
                 ControlMessage::Goodbye => return Ok(()),
                 other => tracing::debug!(?other, "ignored control message"),

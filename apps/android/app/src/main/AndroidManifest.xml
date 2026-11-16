@@ -36,7 +36,7 @@
         <activity
             android:name=".PadActivity"
             android:exported="false"
-            android:screenOrientation="sensorLandscape"
+            android:screenOrientation="fullUser"
             android:configChanges="orientation|screenSize|screenLayout|keyboardHidden" />
     </application>
 </manifest>

@@ -17,6 +17,7 @@ import androidx.core.view.WindowInsetsControllerCompat
 class PadActivity : ComponentActivity() {
 
     private lateinit var info: TextView
+    private lateinit var pad: PenPadView
     private val ticker = object : Runnable {
         override fun run() {
             val s = SessionHolder.session
@@ -25,8 +26,11 @@ class PadActivity : ComponentActivity() {
                 info.setTextColor(Color.RED)
                 return
             }
-            info.text = "${s.host().name} · ${"%.1f".format(s.rttUs().toDouble() / 1000.0)} ms"
-            info.postDelayed(this, 1000)
+            val host = s.host()
+            pad.onHostRegion(host.regionWidth, host.regionHeight)
+            info.text = "${host.name} · ${"%.1f".format(s.rttUs().toDouble() / 1000.0)} ms"
+            // Fast enough that the area follows a rotation almost at once.
+            info.postDelayed(this, 250)
         }
     }
 
@@ -35,7 +39,7 @@ class PadActivity : ComponentActivity() {
         val session = SessionHolder.session ?: run { finish(); return }
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
-        val pad = PenPadView(this, session)
+        pad = PenPadView(this, session)
         info = TextView(this).apply {
             textSize = 13f; alpha = 0.7f; setPadding(24, 12, 24, 12); setTextColor(Color.DKGRAY)
         }

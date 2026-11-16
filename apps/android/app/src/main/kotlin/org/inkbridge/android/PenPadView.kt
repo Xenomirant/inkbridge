@@ -32,9 +32,8 @@ class PenPadView(context: Context, private val session: Session) : View(context)
         const val GESTURE_SLOP_MM = 4f
     }
 
-    private val hostAspect: Float = session.host().let {
-        if (it.regionHeight == 0u) 16f / 9f else it.regionWidth.toFloat() / it.regionHeight.toFloat()
-    }
+    /** Aspect of the desktop region currently mapped to this tablet. */
+    private var hostAspect: Float = session.host().let { aspectOf(it.regionWidth, it.regionHeight) }
     private val area = RectF()
     private var ink: Bitmap? = null
     private var inkCanvas: Canvas? = null
@@ -78,14 +77,36 @@ class PenPadView(context: Context, private val session: Session) : View(context)
     }
 
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
-        val viewAspect = w.toFloat() / h
-        if (viewAspect > hostAspect) {
-            val aw = h * hostAspect; area.set((w - aw) / 2, 0f, (w + aw) / 2, h.toFloat())
-        } else {
-            val ah = w / hostAspect; area.set(0f, (h - ah) / 2, w.toFloat(), (h + ah) / 2)
-        }
+        if (w <= 0 || h <= 0) return
+        layoutArea()
         ink = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888).also { inkCanvas = Canvas(it) }
+        // Rotation or resize: let the computer pick the matching desktop region.
+        runCatching { session.sendViewport(w.toUInt(), h.toUInt()) }
     }
+
+    /** Called when the computer maps a different desktop region. */
+    fun onHostRegion(width: UInt, height: UInt) {
+        val aspect = aspectOf(width, height)
+        if (kotlin.math.abs(aspect - hostAspect) < 1e-3f) return
+        hostAspect = aspect
+        layoutArea()
+        clearInk()
+    }
+
+    /** The largest area with the region's aspect, centred (letterboxed). */
+    private fun layoutArea() {
+        val w = width.toFloat(); val h = height.toFloat()
+        if (w <= 0f || h <= 0f) return
+        if (w / h > hostAspect) {
+            val aw = h * hostAspect; area.set((w - aw) / 2, 0f, (w + aw) / 2, h)
+        } else {
+            val ah = w / hostAspect; area.set(0f, (h - ah) / 2, w, (h + ah) / 2)
+        }
+        invalidate()
+    }
+
+    private fun aspectOf(w: UInt, h: UInt): Float =
+        if (w == 0u || h == 0u) 16f / 9f else w.toFloat() / h.toFloat()
 
     override fun onDraw(canvas: Canvas) {
         canvas.drawRect(area, framePaint)

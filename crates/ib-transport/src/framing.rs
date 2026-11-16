@@ -3,6 +3,9 @@
 //! Frame: `u32` big-endian payload length, then a postcard-encoded
 //! [`ControlMessage`]. Lengths above [`MAX_MESSAGE_LEN`] abort the stream
 //! before any allocation.
+//!
+//! [`Control`] can be [`split`](Control::split) into independent halves so
+//! one task can send while another receives.
 
 use ib_protocol::{ControlMessage, MAX_MESSAGE_LEN, decode, encode};
 
@@ -11,15 +14,56 @@ use crate::TransportError;
 /// The bidirectional control stream of a session.
 #[derive(Debug)]
 pub struct Control {
+    tx: ControlSender,
+    rx: ControlReceiver,
+}
+
+/// Sending half of the control stream.
+#[derive(Debug)]
+pub struct ControlSender {
     send: quinn::SendStream,
+}
+
+/// Receiving half of the control stream.
+#[derive(Debug)]
+pub struct ControlReceiver {
     recv: quinn::RecvStream,
 }
 
 impl Control {
     pub(crate) fn new(send: quinn::SendStream, recv: quinn::RecvStream) -> Self {
-        Self { send, recv }
+        Self {
+            tx: ControlSender { send },
+            rx: ControlReceiver { recv },
+        }
     }
 
+    pub async fn send(&mut self, msg: &ControlMessage) -> Result<(), TransportError> {
+        self.tx.send(msg).await
+    }
+
+    pub async fn recv(&mut self) -> Result<ControlMessage, TransportError> {
+        self.rx.recv().await
+    }
+
+    /// Flushes and closes the sending half.
+    pub async fn finish(mut self) -> Result<(), TransportError> {
+        self.close_send().await;
+        Ok(())
+    }
+
+    /// See [`ControlSender::close_send`].
+    pub async fn close_send(&mut self) {
+        self.tx.close_send().await;
+    }
+
+    /// Splits into independently usable halves.
+    pub fn split(self) -> (ControlSender, ControlReceiver) {
+        (self.tx, self.rx)
+    }
+}
+
+impl ControlSender {
     pub async fn send(&mut self, msg: &ControlMessage) -> Result<(), TransportError> {
         let body = encode(msg)?;
         let len = u32::try_from(body.len()).map_err(|_| TransportError::TooLong(body.len()))?;
@@ -31,6 +75,16 @@ impl Control {
         Ok(())
     }
 
+    /// Finishes the sending half and waits until the peer has received
+    /// everything (or gone away). Call before closing a connection right
+    /// after a final message, such as a rejection, so it isn't lost.
+    pub async fn close_send(&mut self) {
+        let _ = self.send.finish();
+        let _ = self.send.stopped().await;
+    }
+}
+
+impl ControlReceiver {
     pub async fn recv(&mut self) -> Result<ControlMessage, TransportError> {
         let mut len = [0u8; 4];
         self.recv.read_exact(&mut len).await?;
@@ -41,19 +95,5 @@ impl Control {
         let mut body = vec![0u8; len];
         self.recv.read_exact(&mut body).await?;
         Ok(decode(&body)?)
-    }
-
-    /// Flushes and closes the sending half.
-    pub async fn finish(mut self) -> Result<(), TransportError> {
-        self.close_send().await;
-        Ok(())
-    }
-
-    /// Finishes the sending half and waits until the peer has received
-    /// everything (or gone away). Call before closing a connection right
-    /// after a final message, such as a rejection, so it isn't lost.
-    pub async fn close_send(&mut self) {
-        let _ = self.send.finish();
-        let _ = self.send.stopped().await;
     }
 }

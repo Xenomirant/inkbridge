@@ -12,8 +12,8 @@
 // flat boolean records map most directly onto Kotlin/Swift data classes.
 #![allow(clippy::needless_pass_by_value, clippy::struct_excessive_bools)]
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use ib_protocol::{
@@ -200,6 +200,8 @@ pub struct Session {
     seq: AtomicU32,
     closed: Arc<AtomicBool>,
     host: HostInfo,
+    /// Current desktop region size, updated by the computer.
+    region: Arc<Mutex<(u32, u32)>>,
 }
 
 impl std::fmt::Debug for Session {
@@ -233,7 +235,7 @@ impl Session {
             .map_err(|e| InkbridgeError::Transport(e.to_string()))?;
         let identity = Identity::from_der(identity.cert_der, identity.key_der);
 
-        let (endpoint, connection, mut control, hello) = runtime.block_on(async {
+        let (endpoint, connection, control, hello) = runtime.block_on(async {
             let endpoint = ClientEndpoint::new(identity)
                 .map_err(|e| InkbridgeError::Transport(e.to_string()))?;
             let mut last_error = String::from("no addresses in pairing code");
@@ -283,27 +285,12 @@ impl Session {
             Ok::<_, InkbridgeError>((endpoint, connection, control, host))
         })?;
 
-        // Control messages are written by a background task, so input
-        // handlers never block on the network.
-        let (control_tx, mut control_rx) = mpsc::unbounded_channel::<ControlMessage>();
-        let closed = Arc::new(AtomicBool::new(false));
-        let closed_task = closed.clone();
-        runtime.spawn(async move {
-            while let Some(msg) = control_rx.recv().await {
-                let goodbye = matches!(msg, ControlMessage::Goodbye);
-                if control.send(&msg).await.is_err() || goodbye {
-                    break;
-                }
-            }
-            control.close_send().await;
-            closed_task.store(true, Ordering::Release);
-        });
-        let conn_watch = connection.clone();
-        let closed_watch = closed.clone();
-        runtime.spawn(async move {
-            conn_watch.closed().await;
-            closed_watch.store(true, Ordering::Release);
-        });
+        let tasks = spawn_session_tasks(
+            &runtime,
+            control,
+            &connection,
+            (hello.region.width, hello.region.height),
+        );
 
         let host = HostInfo {
             name: hello.host_name,
@@ -320,15 +307,29 @@ impl Session {
             runtime,
             _endpoint: endpoint,
             connection,
-            control_tx,
+            control_tx: tasks.control_tx,
             seq: AtomicU32::new(0),
-            closed,
+            closed: tasks.closed,
             host,
+            region: tasks.region,
         }))
     }
 
+    /// Host details; `region_*` reflect the current mapped desktop area.
     pub fn host(&self) -> HostInfo {
-        self.host.clone()
+        let mut h = self.host.clone();
+        if let Ok(g) = self.region.lock() {
+            (h.region_width, h.region_height) = *g;
+        }
+        h
+    }
+
+    /// Reports the drawing area size (after rotation or resizing). The
+    /// computer answers with the desktop region it maps there. Never blocks.
+    pub fn send_viewport(&self, width: u32, height: u32) -> Result<(), InkbridgeError> {
+        self.control_tx
+            .send(ControlMessage::Viewport { width, height })
+            .map_err(|_| InkbridgeError::Transport("session closed".into()))
     }
 
     pub fn is_connected(&self) -> bool {
@@ -397,6 +398,64 @@ impl Session {
             }
             conn.close("tablet closed the session");
         });
+    }
+}
+
+/// Background tasks of a session and the handles the app-facing side keeps.
+struct SessionTasks {
+    control_tx: mpsc::UnboundedSender<ControlMessage>,
+    closed: Arc<AtomicBool>,
+    region: Arc<Mutex<(u32, u32)>>,
+}
+
+/// Starts the control writer (so input handlers never block on the
+/// network), the control reader (region updates from the computer) and a
+/// connection watcher.
+fn spawn_session_tasks(
+    runtime: &tokio::runtime::Runtime,
+    control: ib_transport::Control,
+    connection: &Connection,
+    initial_region: (u32, u32),
+) -> SessionTasks {
+    let (control_tx, mut control_rx) = mpsc::unbounded_channel::<ControlMessage>();
+    let closed = Arc::new(AtomicBool::new(false));
+    let (mut sender, mut receiver) = control.split();
+
+    let closed_writer = closed.clone();
+    runtime.spawn(async move {
+        while let Some(msg) = control_rx.recv().await {
+            let goodbye = matches!(msg, ControlMessage::Goodbye);
+            if sender.send(&msg).await.is_err() || goodbye {
+                break;
+            }
+        }
+        sender.close_send().await;
+        closed_writer.store(true, Ordering::Release);
+    });
+
+    let region = Arc::new(Mutex::new(initial_region));
+    let region_reader = region.clone();
+    runtime.spawn(async move {
+        while let Ok(msg) = receiver.recv().await {
+            if let ControlMessage::SetRegion(r) = msg
+                && let Ok(mut g) = region_reader.lock()
+            {
+                *g = (r.width, r.height);
+            }
+        }
+    });
+
+    let conn = connection.clone();
+    let closed_watch = closed.clone();
+    runtime.spawn(async move {
+        conn.closed().await;
+        closed_watch.store(true, Ordering::Release);
+    });
+
+    SessionTasks {
+        control_tx,
+        closed,
+        region,
     }
 }
 

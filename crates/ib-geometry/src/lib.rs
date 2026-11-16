@@ -88,6 +88,26 @@ pub fn fit_aspect(bounds: Region, aspect: f64) -> Region {
     }
 }
 
+/// Which part of `display` a tablet with a `width × height` viewport maps to.
+///
+/// - Same orientation (both landscape or both portrait): the whole display,
+///   so every corner stays reachable; the tablet letterboxes slightly.
+/// - Different orientation (portrait tablet, landscape monitor): a centred
+///   strip with the tablet's aspect at full size, instead of shrinking the
+///   whole desktop into a tiny band.
+pub fn region_for_viewport(display: Region, width: u32, height: u32) -> Region {
+    if width == 0 || height == 0 {
+        return display;
+    }
+    let tablet_landscape = width >= height;
+    let display_landscape = display.width >= display.height;
+    if tablet_landscape == display_landscape {
+        display
+    } else {
+        fit_aspect(display, f64::from(width) / f64::from(height))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -112,6 +132,24 @@ mod tests {
     fn rotation_cw90_maps_client_top_left_to_region_bottom_left() {
         let p = to_desktop(MONITOR, Rotation::Cw90, 0.0, 0.0);
         assert_eq!((p.x, p.y), (-1920.0, 1079.0));
+    }
+
+    #[test]
+    fn viewport_policy() {
+        let monitor = Region {
+            x: 0,
+            y: 0,
+            width: 2560,
+            height: 1440,
+        };
+        // Landscape tablet on a landscape monitor: whole desktop.
+        assert_eq!(region_for_viewport(monitor, 2560, 1600), monitor);
+        // Portrait tablet: a full-height portrait strip, centred.
+        let strip = region_for_viewport(monitor, 1600, 2560);
+        assert_eq!((strip.height, strip.width), (1440, 900));
+        assert_eq!(strip.x, (2560 - 900) / 2);
+        // Degenerate viewport: whole desktop.
+        assert_eq!(region_for_viewport(monitor, 0, 10), monitor);
     }
 
     #[test]

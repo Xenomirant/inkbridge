@@ -105,8 +105,15 @@ pub enum ControlMessage {
         t1_us: u64,
         t2_us: u64,
     },
-    /// Change the mapped/streamed desktop region.
+    /// Change the mapped/streamed desktop region. Sent by the host after a
+    /// session starts and whenever the region changes (e.g. on rotation).
     SetRegion(Region),
+    /// Client → host: the tablet's usable area changed (rotation, split
+    /// screen), in physical pixels. The host answers with `SetRegion`.
+    Viewport {
+        width: u32,
+        height: u32,
+    },
     /// Pen contact/tool/button transitions, mirrored reliably so state can
     /// never get stuck if the corresponding datagram is lost.
     PenTransition(PenSample),
