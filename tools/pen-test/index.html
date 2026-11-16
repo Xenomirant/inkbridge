@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Inkbridge pen test</title>
+<!--
+  Shows exactly what the OS delivers to applications through the standard
+  Pointer Events API: pointer type, pressure, tilt and twist. Stroke width is
+  proportional to pressure. Open it in any browser (Edge/Chrome/Firefox) on
+  the host and draw with Inkbridge.
+-->
+<style>
+  :root { color-scheme: light dark; --bg: #fafafa; --fg: #1d1d1f; --muted: #6e6e73; --ink: #1d4ed8; --panel: rgba(255,255,255,.85); }
+  @media (prefers-color-scheme: dark) { :root { --bg: #111; --fg: #f2f2f2; --muted: #a0a0a5; --ink: #7aa2ff; --panel: rgba(30,30,30,.85); } }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg); font: 14px/1.4 system-ui, sans-serif; }
+  canvas { position: fixed; inset: 0; width: 100%; height: 100%; touch-action: none; cursor: crosshair; }
+  #panel { position: fixed; top: 12px; left: 12px; padding: 10px 14px; border-radius: 10px; background: var(--panel); backdrop-filter: blur(6px); font-variant-numeric: tabular-nums; pointer-events: none; }
+  #panel b { display: inline-block; min-width: 7ch; }
+  .muted { color: var(--muted); }
+  #verdict { margin-top: 6px; font-weight: 600; }
+  button { pointer-events: auto; margin-top: 8px; font: inherit; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="panel">
+  <div>type <b id="type">–</b> buttons <b id="buttons">–</b></div>
+  <div>pressure <b id="p">–</b> <span class="muted">min</span> <b id="pmin">–</b> <span class="muted">max</span> <b id="pmax">–</b></div>
+  <div>tiltX <b id="tx">–</b> tiltY <b id="ty">–</b> twist <b id="tw">–</b></div>
+  <div>events <b id="n">0</b> <span class="muted">coalesced/s</span> <b id="rate">–</b></div>
+  <div id="verdict" class="muted">Draw with the pen…</div>
+  <button id="clear">Clear</button>
+</div>
+<script>
+const c = document.getElementById('c'), ctx = c.getContext('2d');
+const $ = id => document.getElementById(id);
+let pmin = Infinity, pmax = -Infinity, n = 0, last = null, sawPen = false, sawTilt = false;
+let window_ = [];
+
+function resize() {
+  const dpr = window.devicePixelRatio || 1;
+  c.width = innerWidth * dpr; c.height = innerHeight * dpr;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.lineCap = 'round';
+}
+addEventListener('resize', resize); resize();
+
+function verdict() {
+  const v = $('verdict');
+  if (!sawPen) { v.textContent = 'Not a pen yet (pointer type is not "pen").'; return; }
+  const range = pmax - pmin;
+  v.textContent = range > 0.3
+    ? `✓ Pen with pressure (range ${pmin.toFixed(2)}–${pmax.toFixed(2)})${sawTilt ? ' and tilt' : ''}`
+    : `Pen detected, pressure range small so far (${range.toFixed(2)})`;
+  v.className = range > 0.3 ? '' : 'muted';
+}
+
+function draw(e) {
+  for (const ev of (e.getCoalescedEvents ? e.getCoalescedEvents() : [e])) {
+    n++; window_.push(performance.now());
+    if (ev.pointerType === 'pen') sawPen = true;
+    if (ev.tiltX || ev.tiltY) sawTilt = true;
+    if (ev.buttons & 1) {
+      pmin = Math.min(pmin, ev.pressure); pmax = Math.max(pmax, ev.pressure);
+      if (last) {
+        ctx.strokeStyle = getComputedStyle(document.documentElement).getPropertyValue('--ink');
+        ctx.lineWidth = 1 + ev.pressure * 14;
+        ctx.beginPath(); ctx.moveTo(last.x, last.y); ctx.lineTo(ev.clientX, ev.clientY); ctx.stroke();
+      }
+      last = { x: ev.clientX, y: ev.clientY };
+    } else last = null;
+  }
+  $('type').textContent = e.pointerType; $('buttons').textContent = e.buttons;
+  $('p').textContent = e.pressure.toFixed(3);
+  $('pmin').textContent = isFinite(pmin) ? pmin.toFixed(3) : '–';
+  $('pmax').textContent = isFinite(pmax) ? pmax.toFixed(3) : '–';
+  $('tx').textContent = e.tiltX; $('ty').textContent = e.tiltY; $('tw').textContent = e.twist;
+  $('n').textContent = n;
+  const now = performance.now(); window_ = window_.filter(t => now - t < 1000);
+  $('rate').textContent = window_.length;
+  verdict();
+}
+c.addEventListener('pointermove', draw);
+c.addEventListener('pointerdown', e => { last = null; draw(e); });
+c.addEventListener('pointerup', () => { last = null; });
+$('clear').onclick = () => { ctx.clearRect(0, 0, c.width, c.height); pmin = Infinity; pmax = -Infinity; n = 0; sawPen = sawTilt = false; verdict(); };
+</script>
+</body>
+</html>
