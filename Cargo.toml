@@ -35,6 +35,7 @@ rustls = { version = "0.23", default-features = false, features = ["std", "ring"
 rcgen = { version = "0.14", default-features = false, features = ["crypto", "ring"] }
 ring = "0.17"
 subtle = "2.6"
+socket2 = "0.6"
 windows = "0.62"
 anyhow = "1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

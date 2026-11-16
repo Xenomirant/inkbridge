@@ -12,3 +12,7 @@ apps/android/local.properties
 # iOS / Xcode
 apps/ios/**/xcuserdata/
 apps/ios/build/
+
+# local test artefacts
+host-run.log
+run-fake-tablet.cmd

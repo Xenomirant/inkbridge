@@ -14,6 +14,20 @@ use crate::{Fingerprint, Identity, TransportError};
 /// ALPN protocol id; bumped with the protocol's major version.
 pub const ALPN: &[u8] = b"inkbridge/0";
 
+/// Binds a UDP socket. IPv6 sockets are made **dual-stack** explicitly:
+/// Windows defaults to IPv6-only (unlike Linux), which would make a host
+/// bound to `[::]` unreachable for IPv4 tablets and a client unable to reach
+/// IPv4 hosts.
+fn bind_udp(addr: SocketAddr) -> std::io::Result<std::net::UdpSocket> {
+    use socket2::{Domain, Protocol, Socket, Type};
+    let socket = Socket::new(Domain::for_address(addr), Type::DGRAM, Some(Protocol::UDP))?;
+    if addr.is_ipv6() {
+        socket.set_only_v6(false)?;
+    }
+    socket.bind(&addr.into())?;
+    Ok(socket.into())
+}
+
 /// QUIC settings tuned for an interactive LAN/USB link.
 fn transport_config() -> Arc<quinn::TransportConfig> {
     let mut t = quinn::TransportConfig::default();
@@ -47,7 +61,12 @@ impl HostEndpoint {
         let mut cfg = quinn::ServerConfig::with_crypto(Arc::new(quic));
         cfg.transport_config(transport_config());
         Ok(Self {
-            endpoint: quinn::Endpoint::server(cfg, addr)?,
+            endpoint: quinn::Endpoint::new(
+                quinn::EndpointConfig::default(),
+                Some(cfg),
+                bind_udp(addr)?,
+                Arc::new(quinn::TokioRuntime),
+            )?,
         })
     }
 
@@ -82,9 +101,14 @@ pub struct ClientEndpoint {
 
 impl ClientEndpoint {
     pub fn new(identity: Identity) -> Result<Self, TransportError> {
-        let bind: SocketAddr = (std::net::Ipv6Addr::UNSPECIFIED, 0).into();
-        let endpoint = quinn::Endpoint::client(bind)
-            .or_else(|_| quinn::Endpoint::client((std::net::Ipv4Addr::UNSPECIFIED, 0).into()))?;
+        let socket = bind_udp((std::net::Ipv6Addr::UNSPECIFIED, 0).into())
+            .or_else(|_| bind_udp((std::net::Ipv4Addr::UNSPECIFIED, 0).into()))?;
+        let endpoint = quinn::Endpoint::new(
+            quinn::EndpointConfig::default(),
+            None,
+            socket,
+            Arc::new(quinn::TokioRuntime),
+        )?;
         Ok(Self { endpoint, identity })
     }
 
@@ -256,6 +280,29 @@ mod tests {
         let (msg, got) = server.await.unwrap();
         assert_eq!(msg, ControlMessage::Ping { t0_us: 1 });
         assert_eq!(got, batch);
+    }
+
+    /// Regression: Windows makes `[::]` sockets IPv6-only by default, which
+    /// left IPv4 tablets unable to reach the host.
+    #[tokio::test]
+    async fn ipv4_client_reaches_dual_stack_host() {
+        let host_id = Identity::generate().unwrap();
+        let host = HostEndpoint::bind(&host_id, "[::]:0".parse().unwrap()).unwrap();
+        let port = host.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let conn = host.accept().await.unwrap().unwrap();
+            conn.closed().await;
+        });
+        let client = ClientEndpoint::new(Identity::generate().unwrap()).unwrap();
+        let addr = SocketAddr::from(([127, 0, 0, 1], port));
+        let conn = tokio::time::timeout(
+            Duration::from_secs(5),
+            client.connect(addr, host_id.fingerprint()),
+        )
+        .await
+        .expect("IPv4 client must reach a host bound to [::]")
+        .unwrap();
+        conn.close("done");
     }
 
     #[tokio::test]

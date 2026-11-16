@@ -20,6 +20,7 @@ rustls.workspace = true
 rcgen.workspace = true
 ring.workspace = true
 subtle.workspace = true
+socket2.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

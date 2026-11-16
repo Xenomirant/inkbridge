@@ -39,7 +39,21 @@ impl Host {
         store: PairingStore,
         pen: Sender<PenInput>,
     ) -> anyhow::Result<Arc<Self>> {
-        let endpoint = HostEndpoint::bind(&identity, config.bind)?;
+        let endpoint = match HostEndpoint::bind(&identity, config.bind) {
+            // The preferred port can be reserved by other software (e.g. WSL's
+            // mirrored networking reserves a block of Windows ports). Any port
+            // works because the QR code carries the actual one.
+            Err(ib_transport::TransportError::Io(e))
+                if e.kind() == std::io::ErrorKind::AddrInUse && config.bind.port() != 0 =>
+            {
+                tracing::warn!(
+                    port = config.bind.port(),
+                    "port unavailable, using a free one"
+                );
+                HostEndpoint::bind(&identity, SocketAddr::new(config.bind.ip(), 0))?
+            }
+            other => other?,
+        };
         Ok(Arc::new(Self {
             endpoint,
             identity,

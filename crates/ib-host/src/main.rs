@@ -13,7 +13,9 @@ use ib_session::PairingStore;
 use ib_transport::PairingOffer;
 use tracing_subscriber::EnvFilter;
 
-const DEFAULT_PORT: u16 = 47800;
+/// Below 32768, outside the ranges Windows (49152+), Linux (32768+) and WSL hand
+/// out automatically, so it is rarely taken; `Host` falls back if it is.
+const DEFAULT_PORT: u16 = 27840;
 
 struct Args {
     port: u16,

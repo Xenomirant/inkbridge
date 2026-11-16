@@ -455,6 +455,7 @@ dependencies = [
  "rcgen",
  "ring",
  "rustls",
+ "socket2",
  "subtle",
  "thiserror",
  "tokio",
