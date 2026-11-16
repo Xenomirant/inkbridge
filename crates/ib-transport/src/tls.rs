@@ -17,11 +17,12 @@ pub(crate) fn provider() -> Arc<CryptoProvider> {
     Arc::new(rustls::crypto::ring::default_provider())
 }
 
-/// Client side: accept the host only if its certificate matches the pinned
-/// fingerprint from the QR code (or the paired-host store).
+/// Dialling side: accept the peer only if its certificate matches one of the
+/// pinned fingerprints (the host from the QR code; or, when the host dials a
+/// tablet over USB, any paired tablet).
 #[derive(Debug)]
 pub(crate) struct PinnedServer {
-    pub expected: Fingerprint,
+    pub expected: Vec<Fingerprint>,
     pub provider: Arc<CryptoProvider>,
 }
 
@@ -34,7 +35,7 @@ impl ServerCertVerifier for PinnedServer {
         _ocsp_response: &[u8],
         _now: UnixTime,
     ) -> Result<ServerCertVerified, rustls::Error> {
-        if Fingerprint::of(end_entity) == self.expected {
+        if self.expected.contains(&Fingerprint::of(end_entity)) {
             Ok(ServerCertVerified::assertion())
         } else {
             Err(rustls::Error::InvalidCertificate(
@@ -98,6 +99,68 @@ impl ClientCertVerifier for AnyClientCert {
         _now: UnixTime,
     ) -> Result<ClientCertVerified, rustls::Error> {
         Ok(ClientCertVerified::assertion())
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, rustls::Error> {
+        verify_tls12_signature(
+            message,
+            cert,
+            dss,
+            &self.provider.signature_verification_algorithms,
+        )
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, rustls::Error> {
+        verify_tls13_signature(
+            message,
+            cert,
+            dss,
+            &self.provider.signature_verification_algorithms,
+        )
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
+        self.provider
+            .signature_verification_algorithms
+            .supported_schemes()
+    }
+}
+
+/// Tablet listening on USB: accept only the paired computer's certificate.
+#[derive(Debug)]
+pub(crate) struct PinnedClient {
+    pub expected: Fingerprint,
+    pub provider: Arc<CryptoProvider>,
+}
+
+impl ClientCertVerifier for PinnedClient {
+    fn root_hint_subjects(&self) -> &[DistinguishedName] {
+        &[]
+    }
+
+    fn verify_client_cert(
+        &self,
+        end_entity: &CertificateDer<'_>,
+        _intermediates: &[CertificateDer<'_>],
+        _now: UnixTime,
+    ) -> Result<ClientCertVerified, rustls::Error> {
+        if Fingerprint::of(end_entity) == self.expected {
+            Ok(ClientCertVerified::assertion())
+        } else {
+            Err(rustls::Error::InvalidCertificate(
+                CertificateError::ApplicationVerificationFailure,
+            ))
+        }
     }
 
     fn verify_tls12_signature(

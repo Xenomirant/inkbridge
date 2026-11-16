@@ -48,6 +48,9 @@ pub struct Host {
     /// Secret shown in the current QR code; `None` = pairing closed.
     pairing: Mutex<Option<PairingSecret>>,
     pen: Sender<PenInput>,
+    /// One tablet at a time (there is one pen): held for a session's life.
+    session: Mutex<()>,
+    usb_tip_shown: std::sync::atomic::AtomicBool,
 }
 
 impl Host {
@@ -78,6 +81,8 @@ impl Host {
             config,
             store: Mutex::new(store),
             pairing: Mutex::new(None),
+            session: Mutex::new(()),
+            usb_tip_shown: std::sync::atomic::AtomicBool::new(false),
             pen,
         }))
     }
@@ -104,27 +109,95 @@ impl Host {
 
     /// Serves tablets one at a time (there's one pen) until the endpoint closes.
     /// `on_paired` runs after a successful pairing, e.g. to show a new QR code.
+    /// Serves tablets until the endpoint closes: tablets connecting over
+    /// Wi-Fi, and tablets on USB tethering, which this host dials.
     pub async fn run(self: Arc<Self>, on_paired: impl Fn(&str) + Send + Sync) {
+        tokio::join!(self.accept_loop(&on_paired), self.usb_loop(&on_paired));
+    }
+
+    async fn accept_loop(&self, on_paired: &(impl Fn(&str) + Send + Sync)) {
         while let Some(incoming) = self.endpoint.accept().await {
             match incoming {
                 Ok(conn) => {
-                    tracing::info!(peer = %conn.remote_addr(), "tablet connected");
-                    match self.serve(&conn).await {
-                        Ok(Some(name)) => on_paired(&name),
-                        Ok(None) => {}
-                        Err(e) => tracing::warn!("session ended: {e}"),
-                    }
-                    let _ = self.pen.send(PenInput::Disconnected);
-                    conn.close("session over");
-                    tracing::info!("tablet disconnected");
+                    let _slot = self.session.lock().await;
+                    self.run_session(&conn, TransportKind::Wifi, on_paired)
+                        .await;
                 }
                 Err(e) => tracing::warn!("connection attempt failed: {e}"),
             }
         }
     }
 
+    /// Dials tablets on USB tethering links (the tablet is our gateway
+    /// there; outgoing connections need no firewall rule). Paired tablets
+    /// only; the session itself is the same as over Wi-Fi.
+    async fn usb_loop(&self, on_paired: &(impl Fn(&str) + Send + Sync)) {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            let Ok(_slot) = self.session.try_lock() else {
+                continue;
+            }; // a tablet is connected
+            let paired: Vec<_> = self
+                .store
+                .lock()
+                .await
+                .devices()
+                .iter()
+                .map(|d| d.fingerprint)
+                .collect();
+            if paired.is_empty() {
+                continue;
+            }
+            for link in crate::usb::tether_links() {
+                if !self
+                    .usb_tip_shown
+                    .swap(true, std::sync::atomic::Ordering::Relaxed)
+                {
+                    tracing::info!(
+                        tablet = %link.tablet,
+                        "USB tethering link found. Tip: run `inkbridge-host --fix-usb-routing` once so this PC's \
+                         internet traffic doesn't go through the tablet."
+                    );
+                }
+                let addr = SocketAddr::new(IpAddr::V4(link.tablet), ib_protocol::DEFAULT_PORT);
+                let dial = self.endpoint.dial(addr, paired.clone());
+                match tokio::time::timeout(std::time::Duration::from_millis(1500), dial).await {
+                    Ok(Ok(conn)) => {
+                        tracing::info!(%addr, "tablet reached over USB");
+                        self.run_session(&conn, TransportKind::Usb, on_paired).await;
+                        break;
+                    }
+                    // The tablet isn't listening (app closed) or refused us.
+                    Ok(Err(e)) => tracing::debug!(%addr, "USB dial failed: {e}"),
+                    Err(_) => tracing::debug!(%addr, "USB dial timed out"),
+                }
+            }
+        }
+    }
+
+    async fn run_session(
+        &self,
+        conn: &Connection,
+        transport: TransportKind,
+        on_paired: &(impl Fn(&str) + Send + Sync),
+    ) {
+        tracing::info!(peer = %conn.remote_addr(), ?transport, "tablet connected");
+        match self.serve(conn, transport).await {
+            Ok(Some(name)) => on_paired(&name),
+            Ok(None) => {}
+            Err(e) => tracing::warn!("session ended: {e}"),
+        }
+        let _ = self.pen.send(PenInput::Disconnected);
+        conn.close("session over");
+        tracing::info!("tablet disconnected");
+    }
+
     /// One session. Returns the device name if it paired during this session.
-    async fn serve(&self, conn: &Connection) -> anyhow::Result<Option<String>> {
+    async fn serve(
+        &self,
+        conn: &Connection,
+        transport: TransportKind,
+    ) -> anyhow::Result<Option<String>> {
         let mut ctl = conn.accept_control().await?;
         let peer = conn.peer_fingerprint();
         let settings = HostSettings {
@@ -141,7 +214,7 @@ impl Host {
                 pen: self.config.pen_features,
             },
             region: self.config.region,
-            transport: TransportKind::Wifi,
+            transport,
         };
 
         let pending = *self.pairing.lock().await;

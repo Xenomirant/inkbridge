@@ -19,6 +19,48 @@ pub fn init_process() {
     }
 }
 
+/// Advanced option (one admin approval): with USB tethering, Windows gives
+/// the tablet's network the same priority as Ethernet/Wi-Fi and starts
+/// sending part of the PC's internet traffic through the tablet. `fix`
+/// raises the interface metric of tethering adapters so internet traffic
+/// stays on the normal network (the direct link to the tablet keeps
+/// working); `!fix` restores automatic metrics. Persists per adapter.
+pub fn set_usb_routing(fix: bool) -> anyhow::Result<()> {
+    #[cfg(windows)]
+    {
+        let filter = "Get-NetAdapter | Where-Object { $_.InterfaceDescription -match 'Remote NDIS|RNDIS|NCM' }";
+        let action = if fix {
+            "Set-NetIPInterface -InterfaceMetric 500 -AddressFamily IPv4"
+        } else {
+            "Set-NetIPInterface -AutomaticMetric Enabled -AddressFamily IPv4"
+        };
+        let script = format!("{filter} | ForEach-Object {{ $_ | {action} }}");
+        // Elevated child PowerShell: Windows shows its admin prompt.
+        let status = std::process::Command::new("powershell.exe")
+            .args(["-NoProfile", "-Command"])
+            .arg(format!(
+                "Start-Process powershell.exe -Verb RunAs -Wait -WindowStyle Hidden -ArgumentList '-NoProfile','-Command','{}'",
+                script.replace('\'', "''")
+            ))
+            .status()?;
+        anyhow::ensure!(
+            status.success(),
+            "the admin prompt was declined or PowerShell failed"
+        );
+        if crate::usb::tether_links().is_empty() {
+            println!(
+                "Note: no tablet is tethered right now; plug it in with USB tethering on and run this again."
+            );
+        }
+        Ok(())
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = fix;
+        anyhow::bail!("only needed on Windows")
+    }
+}
+
 /// Gives the pen thread priority over normal work so injection isn't
 /// delayed by background load.
 pub fn raise_thread_priority() {

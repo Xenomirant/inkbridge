@@ -42,24 +42,54 @@ fn transport_config() -> Arc<quinn::TransportConfig> {
     Arc::new(t)
 }
 
+fn server_config(
+    identity: &Identity,
+    verifier: Arc<dyn rustls::server::danger::ClientCertVerifier>,
+) -> Result<quinn::ServerConfig, TransportError> {
+    let mut tls = rustls::ServerConfig::builder_with_provider(provider())
+        .with_protocol_versions(&[&rustls::version::TLS13])?
+        .with_client_cert_verifier(verifier)
+        .with_single_cert(identity.cert_chain(), identity.private_key())?;
+    tls.alpn_protocols = vec![ALPN.to_vec()];
+    let quic = QuicServerConfig::try_from(tls)
+        .map_err(|e| TransportError::Tls(rustls::Error::General(e.to_string())))?;
+    let mut cfg = quinn::ServerConfig::with_crypto(Arc::new(quic));
+    cfg.transport_config(transport_config());
+    Ok(cfg)
+}
+
+fn client_config(
+    identity: &Identity,
+    peers: Vec<Fingerprint>,
+) -> Result<quinn::ClientConfig, TransportError> {
+    let p = provider();
+    let mut tls = rustls::ClientConfig::builder_with_provider(p.clone())
+        .with_protocol_versions(&[&rustls::version::TLS13])?
+        .dangerous()
+        .with_custom_certificate_verifier(Arc::new(PinnedServer {
+            expected: peers,
+            provider: p,
+        }))
+        .with_client_auth_cert(identity.cert_chain(), identity.private_key())?;
+    tls.alpn_protocols = vec![ALPN.to_vec()];
+    let quic = QuicClientConfig::try_from(tls)
+        .map_err(|e| TransportError::Tls(rustls::Error::General(e.to_string())))?;
+    let mut cfg = quinn::ClientConfig::new(Arc::new(quic));
+    cfg.transport_config(transport_config());
+    Ok(cfg)
+}
+
 /// Host side: listens for tablets.
 #[derive(Debug)]
 pub struct HostEndpoint {
     endpoint: quinn::Endpoint,
+    identity: Identity,
 }
 
 impl HostEndpoint {
     pub fn bind(identity: &Identity, addr: SocketAddr) -> Result<Self, TransportError> {
         let p = provider();
-        let mut tls = rustls::ServerConfig::builder_with_provider(p.clone())
-            .with_protocol_versions(&[&rustls::version::TLS13])?
-            .with_client_cert_verifier(Arc::new(AnyClientCert { provider: p }))
-            .with_single_cert(identity.cert_chain(), identity.private_key())?;
-        tls.alpn_protocols = vec![ALPN.to_vec()];
-        let quic = QuicServerConfig::try_from(tls)
-            .map_err(|e| TransportError::Tls(rustls::Error::General(e.to_string())))?;
-        let mut cfg = quinn::ServerConfig::with_crypto(Arc::new(quic));
-        cfg.transport_config(transport_config());
+        let cfg = server_config(identity, Arc::new(AnyClientCert { provider: p }))?;
         Ok(Self {
             endpoint: quinn::Endpoint::new(
                 quinn::EndpointConfig::default(),
@@ -67,7 +97,22 @@ impl HostEndpoint {
                 bind_udp(addr)?,
                 Arc::new(quinn::TokioRuntime),
             )?,
+            identity: identity.clone(),
         })
+    }
+
+    /// Dials a tablet that listens (USB: the tablet is our gateway, so we
+    /// know its address, and outgoing connections need no firewall rule).
+    /// Only tablets whose fingerprint is in `paired` are accepted.
+    pub async fn dial(
+        &self,
+        addr: SocketAddr,
+        paired: Vec<Fingerprint>,
+    ) -> Result<Connection, TransportError> {
+        let cfg = client_config(&self.identity, paired)?;
+        let conn = self.endpoint.connect_with(cfg, addr, "inkbridge")?.await?;
+        let peer = peer_fingerprint(&conn)?;
+        Ok(Connection { conn, peer })
     }
 
     pub fn local_addr(&self) -> Result<SocketAddr, TransportError> {
@@ -118,26 +163,62 @@ impl ClientEndpoint {
         addr: SocketAddr,
         host_fp: Fingerprint,
     ) -> Result<Connection, TransportError> {
-        let p = provider();
-        let mut tls = rustls::ClientConfig::builder_with_provider(p.clone())
-            .with_protocol_versions(&[&rustls::version::TLS13])?
-            .dangerous()
-            .with_custom_certificate_verifier(Arc::new(PinnedServer {
-                expected: host_fp,
-                provider: p,
-            }))
-            .with_client_auth_cert(self.identity.cert_chain(), self.identity.private_key())?;
-        tls.alpn_protocols = vec![ALPN.to_vec()];
-        let quic = QuicClientConfig::try_from(tls)
-            .map_err(|e| TransportError::Tls(rustls::Error::General(e.to_string())))?;
-        let mut cfg = quinn::ClientConfig::new(Arc::new(quic));
-        cfg.transport_config(transport_config());
+        let cfg = client_config(&self.identity, vec![host_fp])?;
         // The server name is irrelevant (we pin by fingerprint) but must be valid.
         let conn = self.endpoint.connect_with(cfg, addr, "inkbridge")?.await?;
         Ok(Connection {
             conn,
             peer: host_fp,
         })
+    }
+}
+
+/// Tablet side, USB: waits for the paired computer to dial in over the
+/// tethering link. Bound to the USB interface's address only, and accepts
+/// only the paired computer's certificate.
+#[derive(Debug)]
+pub struct UsbListener {
+    endpoint: quinn::Endpoint,
+    host: Fingerprint,
+}
+
+impl UsbListener {
+    pub fn bind(
+        identity: &Identity,
+        addr: SocketAddr,
+        host: Fingerprint,
+    ) -> Result<Self, TransportError> {
+        let verifier = Arc::new(crate::tls::PinnedClient {
+            expected: host,
+            provider: provider(),
+        });
+        let cfg = server_config(identity, verifier)?;
+        let endpoint = quinn::Endpoint::new(
+            quinn::EndpointConfig::default(),
+            Some(cfg),
+            bind_udp(addr)?,
+            Arc::new(quinn::TokioRuntime),
+        )?;
+        Ok(Self { endpoint, host })
+    }
+
+    pub fn local_addr(&self) -> Result<SocketAddr, TransportError> {
+        Ok(self.endpoint.local_addr()?)
+    }
+
+    /// Waits for the computer. `None` once closed.
+    pub async fn accept(&self) -> Option<Result<Connection, TransportError>> {
+        let incoming = self.endpoint.accept().await?;
+        let host = self.host;
+        Some(
+            async move {
+                Ok(Connection {
+                    conn: incoming.await?,
+                    peer: host,
+                })
+            }
+            .await,
+        )
     }
 }
 
@@ -313,6 +394,88 @@ mod tests {
         .expect("IPv4 client must reach a host bound to [::]")
         .unwrap();
         conn.close("done");
+    }
+
+    /// USB: the host dials the tablet; roles inside the session are unchanged
+    /// (the tablet opens the control stream).
+    #[tokio::test]
+    async fn host_dials_paired_tablet_over_usb() {
+        let (host_id, tablet_id) = (Identity::generate().unwrap(), Identity::generate().unwrap());
+        let listener = UsbListener::bind(
+            &tablet_id,
+            "127.0.0.1:0".parse().unwrap(),
+            host_id.fingerprint(),
+        )
+        .unwrap();
+        let addr = listener.local_addr().unwrap();
+        let tablet = tokio::spawn(async move {
+            let conn = listener.accept().await.unwrap().unwrap();
+            let mut ctl = conn.open_control().await.unwrap();
+            ctl.send(&ControlMessage::Ping { t0_us: 7 }).await.unwrap();
+            ctl.recv().await.unwrap()
+        });
+        let host = HostEndpoint::bind(&host_id, "127.0.0.1:0".parse().unwrap()).unwrap();
+        let conn = host
+            .dial(addr, vec![tablet_id.fingerprint()])
+            .await
+            .unwrap();
+        assert_eq!(conn.peer_fingerprint(), tablet_id.fingerprint());
+        let mut ctl = conn.accept_control().await.unwrap();
+        assert_eq!(ctl.recv().await.unwrap(), ControlMessage::Ping { t0_us: 7 });
+        ctl.send(&ControlMessage::Goodbye).await.unwrap();
+        assert_eq!(tablet.await.unwrap(), ControlMessage::Goodbye);
+    }
+
+    #[tokio::test]
+    async fn host_refuses_unpaired_tablet_and_tablet_refuses_other_host() {
+        let (host_id, tablet_id) = (Identity::generate().unwrap(), Identity::generate().unwrap());
+        // Host doesn't know this tablet.
+        let listener = UsbListener::bind(
+            &tablet_id,
+            "127.0.0.1:0".parse().unwrap(),
+            host_id.fingerprint(),
+        )
+        .unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { while let Some(_c) = listener.accept().await {} });
+        let host = HostEndpoint::bind(&host_id, "127.0.0.1:0".parse().unwrap()).unwrap();
+        let err = host.dial(addr, vec![Fingerprint([1; 32])]).await;
+        assert!(err.is_err(), "unpaired tablet must be refused");
+
+        // Tablet is paired with a different computer. In TLS 1.3 the dialler
+        // completes its side of the handshake before the listener has checked
+        // the dialler's certificate, so `dial` may report success; what
+        // matters is that the tablet rejects it and no session can run.
+        let stranger = Identity::generate().unwrap();
+        let listener = UsbListener::bind(
+            &tablet_id,
+            "127.0.0.1:0".parse().unwrap(),
+            stranger.fingerprint(),
+        )
+        .unwrap();
+        let addr = listener.local_addr().unwrap();
+        let accepted = tokio::spawn(async move { listener.accept().await.map(|r| r.is_ok()) });
+        if let Ok(Ok(conn)) = tokio::time::timeout(
+            Duration::from_secs(5),
+            host.dial(addr, vec![tablet_id.fingerprint()]),
+        )
+        .await
+        {
+            let ctl = tokio::time::timeout(Duration::from_secs(5), conn.accept_control()).await;
+            assert!(
+                !matches!(ctl, Ok(Ok(_))),
+                "no session may run with a rejected computer"
+            );
+        }
+        let tablet_side = tokio::time::timeout(Duration::from_secs(5), accepted)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            tablet_side,
+            Some(false),
+            "tablet must reject a computer it isn't paired with"
+        );
     }
 
     #[tokio::test]

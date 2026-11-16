@@ -21,7 +21,7 @@ use ib_protocol::{
     PenSample, PenState, Tool, TouchContact, TouchPhase, VideoChunk, VideoCodec,
 };
 use ib_session::{SessionError, client_handshake};
-use ib_transport::{ClientEndpoint, Connection, Identity, PairingOffer, PenChannel};
+use ib_transport::{ClientEndpoint, Connection, Identity, PairingOffer, PenChannel, UsbListener};
 use tokio::sync::mpsc;
 
 uniffi::setup_scaffolding!();
@@ -69,6 +69,8 @@ pub struct PairingInfo {
 pub struct HostInfo {
     pub name: String,
     pub address: String,
+    /// Connected over the USB cable (otherwise Wi-Fi/LAN).
+    pub usb: bool,
     pub region_width: u32,
     pub region_height: u32,
     /// Current region's position on the desktop (for the zoomable view).
@@ -296,7 +298,7 @@ pub fn core_version() -> String {
 pub struct Session {
     runtime: tokio::runtime::Runtime,
     /// Kept alive for as long as the session; dropping it would stop QUIC.
-    _endpoint: ClientEndpoint,
+    _keep: KeepAlive,
     connection: Connection,
     pen: PenChannel,
     control_tx: mpsc::UnboundedSender<ControlMessage>,
@@ -333,19 +335,12 @@ impl Session {
     ) -> Result<Arc<Self>, InkbridgeError> {
         let offer =
             PairingOffer::parse(&code).map_err(|e| InkbridgeError::InvalidCode(e.to_string()))?;
-        let runtime = tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(2)
-            .thread_name("inkbridge-net")
-            .enable_all()
-            .build()
-            .map_err(|e| InkbridgeError::Transport(e.to_string()))?;
+        let runtime = new_runtime()?;
         let identity = Identity::from_der(identity.cert_der, identity.key_der);
-
-        let (endpoint, connection, control, hello) = runtime.block_on(async {
+        let (keep, connection) = runtime.block_on(async {
             let endpoint = ClientEndpoint::new(identity)
                 .map_err(|e| InkbridgeError::Transport(e.to_string()))?;
             let mut last_error = String::from("no addresses in pairing code");
-            let mut connection = None;
             for addr in &offer.addrs {
                 match tokio::time::timeout(
                     Duration::from_secs(3),
@@ -353,84 +348,68 @@ impl Session {
                 )
                 .await
                 {
-                    Ok(Ok(c)) => {
-                        connection = Some(c);
-                        break;
-                    }
+                    Ok(Ok(c)) => return Ok((KeepAlive::Client(endpoint), c)),
                     Ok(Err(e)) => last_error = format!("{addr}: {e}"),
                     Err(_) => last_error = format!("{addr}: timed out"),
                 }
             }
-            let connection = connection.ok_or(InkbridgeError::Unreachable(last_error))?;
-            let mut control = connection
-                .open_control()
-                .await
-                .map_err(|e| InkbridgeError::Transport(e.to_string()))?;
-            let hello = ClientHello {
-                version: PROTOCOL_VERSION,
-                device_name: device_name.clone(),
-                caps: Capabilities {
-                    // Every Android device decodes H.264 in hardware.
-                    video_codecs: vec![VideoCodec::H264],
-                    max_width: screen_width.max(screen_height),
-                    max_height: screen_width.max(screen_height),
-                    max_fps: 60,
-                    pen: PenFeatures {
-                        pressure: true,
-                        tilt: true,
-                        rotation: false,
-                        hover: true,
-                        eraser: true,
-                        barrel_button: true,
-                    },
-                },
-                screen_width,
-                screen_height,
-            };
-            let pairing = pair.then(|| (offer.secret.0, device_name.clone()));
-            let host = client_handshake(&mut control, hello, pairing).await?;
-            Ok::<_, InkbridgeError>((endpoint, connection, control, host))
+            Err(InkbridgeError::Unreachable(last_error))
         })?;
-
-        let tasks = spawn_session_tasks(&runtime, control, &connection, hello.region);
-        let video = hello.codec.map(|_| {
-            spawn_video_receiver(
-                &runtime,
-                &connection,
-                tasks.telemetry.clone(),
-                tasks.control_tx.clone(),
-            )
-        });
-
-        let host = HostInfo {
-            name: hello.host_name,
-            address: connection.remote_addr().to_string(),
-            region_width: hello.region.width,
-            region_height: hello.region.height,
-            region_x: hello.region.x,
-            region_y: hello.region.y,
-            display_x: hello.display.x,
-            display_y: hello.display.y,
-            display_width: hello.display.width,
-            display_height: hello.display.height,
-            pressure: hello.caps.pen.pressure,
-            tilt: hello.caps.pen.tilt,
-            hover: hello.caps.pen.hover,
-            eraser: hello.caps.pen.eraser,
-        };
-        Ok(Arc::new(Self {
-            pen: connection.pen(),
+        let pairing = pair.then(|| (offer.secret.0, device_name.clone()));
+        Self::establish(
             runtime,
-            _endpoint: endpoint,
+            keep,
             connection,
-            control_tx: tasks.control_tx,
-            seq: AtomicU32::new(0),
-            closed: tasks.closed,
-            host,
-            region: tasks.region,
-            video,
-            telemetry: tasks.telemetry,
-        }))
+            device_name,
+            pairing,
+            screen_width,
+            screen_height,
+        )
+    }
+
+    /// USB: waits up to `timeout_ms` for the paired computer (from `code`)
+    /// to dial in over the tethering link. Listens on `bind_ip` (the tablet's
+    /// address on the USB interface) only. Blocks; call from a background
+    /// thread. Returns `Unreachable` on timeout.
+    #[uniffi::constructor]
+    pub fn accept_usb(
+        code: String,
+        identity: DeviceIdentity,
+        device_name: String,
+        bind_ip: String,
+        timeout_ms: u32,
+        screen_width: u32,
+        screen_height: u32,
+    ) -> Result<Arc<Self>, InkbridgeError> {
+        let offer =
+            PairingOffer::parse(&code).map_err(|e| InkbridgeError::InvalidCode(e.to_string()))?;
+        let ip: std::net::IpAddr = bind_ip
+            .parse()
+            .map_err(|_| InkbridgeError::Transport(format!("not an IP address: {bind_ip}")))?;
+        let runtime = new_runtime()?;
+        let identity = Identity::from_der(identity.cert_der, identity.key_der);
+        let (keep, connection) = runtime.block_on(async {
+            let addr = std::net::SocketAddr::new(ip, ib_protocol::DEFAULT_PORT);
+            let listener = UsbListener::bind(&identity, addr, offer.fingerprint)
+                .map_err(|e| InkbridgeError::Transport(e.to_string()))?;
+            let wait = Duration::from_millis(u64::from(timeout_ms));
+            match tokio::time::timeout(wait, listener.accept()).await {
+                Ok(Some(Ok(c))) => Ok((KeepAlive::Usb(listener), c)),
+                Ok(Some(Err(e))) => Err(InkbridgeError::Transport(e.to_string())),
+                Ok(None) | Err(_) => {
+                    Err(InkbridgeError::Unreachable("no computer on USB yet".into()))
+                }
+            }
+        })?;
+        Self::establish(
+            runtime,
+            keep,
+            connection,
+            device_name,
+            None,
+            screen_width,
+            screen_height,
+        )
     }
 
     /// Host details; `region_*` reflect the current mapped desktop area.
@@ -610,6 +589,118 @@ impl Session {
             }
             conn.close("tablet closed the session");
         });
+    }
+}
+
+/// Whatever must stay alive with a session for QUIC to keep running.
+#[expect(
+    dead_code,
+    reason = "held, never read: dropping the endpoint would stop QUIC"
+)]
+enum KeepAlive {
+    Client(ClientEndpoint),
+    Usb(UsbListener),
+}
+
+impl std::fmt::Debug for KeepAlive {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Client(_) => "KeepAlive::Client",
+            Self::Usb(_) => "KeepAlive::Usb",
+        })
+    }
+}
+
+fn new_runtime() -> Result<tokio::runtime::Runtime, InkbridgeError> {
+    tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .thread_name("inkbridge-net")
+        .enable_all()
+        .build()
+        .map_err(|e| InkbridgeError::Transport(e.to_string()))
+}
+
+impl Session {
+    /// Hello/pairing exchange on a fresh connection (either direction), then
+    /// starts the session's background tasks.
+    fn establish(
+        runtime: tokio::runtime::Runtime,
+        keep: KeepAlive,
+        connection: Connection,
+        device_name: String,
+        pairing: Option<([u8; ib_protocol::PAIRING_SECRET_LEN], String)>,
+        screen_width: u32,
+        screen_height: u32,
+    ) -> Result<Arc<Self>, InkbridgeError> {
+        let (control, hello) = runtime.block_on(async {
+            let mut control = connection
+                .open_control()
+                .await
+                .map_err(|e| InkbridgeError::Transport(e.to_string()))?;
+            let hello = ClientHello {
+                version: PROTOCOL_VERSION,
+                device_name,
+                caps: Capabilities {
+                    // Every Android device decodes H.264 in hardware.
+                    video_codecs: vec![VideoCodec::H264],
+                    max_width: screen_width.max(screen_height),
+                    max_height: screen_width.max(screen_height),
+                    max_fps: 60,
+                    pen: PenFeatures {
+                        pressure: true,
+                        tilt: true,
+                        rotation: false,
+                        hover: true,
+                        eraser: true,
+                        barrel_button: true,
+                    },
+                },
+                screen_width,
+                screen_height,
+            };
+            let host = client_handshake(&mut control, hello, pairing).await?;
+            Ok::<_, InkbridgeError>((control, host))
+        })?;
+
+        let tasks = spawn_session_tasks(&runtime, control, &connection, hello.region);
+        let video = hello.codec.map(|_| {
+            spawn_video_receiver(
+                &runtime,
+                &connection,
+                tasks.telemetry.clone(),
+                tasks.control_tx.clone(),
+            )
+        });
+        let host = HostInfo {
+            name: hello.host_name,
+            address: connection.remote_addr().to_string(),
+            usb: hello.transport == ib_protocol::TransportKind::Usb,
+            region_width: hello.region.width,
+            region_height: hello.region.height,
+            region_x: hello.region.x,
+            region_y: hello.region.y,
+            display_x: hello.display.x,
+            display_y: hello.display.y,
+            display_width: hello.display.width,
+            display_height: hello.display.height,
+            pressure: hello.caps.pen.pressure,
+            tilt: hello.caps.pen.tilt,
+            hover: hello.caps.pen.hover,
+            eraser: hello.caps.pen.eraser,
+        };
+        Ok(Arc::new(Self {
+            pen: connection.pen(),
+            runtime,
+            _keep: keep,
+            connection,
+            control_tx: tasks.control_tx,
+            seq: AtomicU32::new(0),
+            closed: tasks.closed,
+            host,
+            region: tasks.region,
+            video,
+            telemetry: tasks.telemetry,
+        }))
     }
 }
 

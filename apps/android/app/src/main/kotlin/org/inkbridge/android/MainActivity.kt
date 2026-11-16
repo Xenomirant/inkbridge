@@ -44,6 +44,50 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         refresh()
+        startUsbWatcher()
+    }
+
+    override fun onPause() {
+        super.onPause()
+        usbWatching = false
+    }
+
+    @Volatile private var usbWatching = false
+
+    /**
+     * USB: while this screen is open, wait for the paired computer to dial in
+     * over the tethering link (it dials the tablet: no firewall setup on the
+     * computer). Connects without a tap as soon as the cable link is up.
+     */
+    private fun startUsbWatcher() {
+        val code = storage.pairedCode ?: return
+        if (usbWatching) return
+        usbWatching = true
+        val identity = runCatching { storage.identity() }.getOrNull() ?: return
+        val metrics = resources.displayMetrics
+        thread(name = "inkbridge-usb") {
+            var announced = false
+            while (usbWatching) {
+                val ip = UsbLink.tetherAddress()
+                if (ip == null || busy) {
+                    announced = false
+                    Thread.sleep(1000)
+                    continue
+                }
+                if (!announced) {
+                    announced = true
+                    runOnUiThread { if (!busy) status.text = "USB cable connected — waiting for the computer…" }
+                }
+                val session = runCatching {
+                    Session.acceptUsb(
+                        code, identity, deviceName(), ip, 2000u,
+                        metrics.widthPixels.toUInt(), metrics.heightPixels.toUInt(),
+                    )
+                }.getOrNull() ?: continue
+                usbWatching = false
+                runOnUiThread { onConnected(session, code) }
+            }
+        }
     }
 
     /** `inkbridge:pair?...` links, e.g. from the system camera's QR scanner or adb. */
@@ -113,18 +157,20 @@ class MainActivity : ComponentActivity() {
             }
             runOnUiThread {
                 busy = false
-                result.onSuccess { session ->
-                    val host = session.host()
-                    storage.pairedCode = code
-                    storage.pairedName = host.name
-                    SessionHolder.close()
-                    SessionHolder.session = session
-                    status.text = "Connected to ${host.name}"
-                    startActivity(Intent(this, PadActivity::class.java))
-                }.onFailure { fail(it) }
+                result.onSuccess { session -> onConnected(session, code) }.onFailure { fail(it) }
                 refresh()
             }
         }
+    }
+
+    private fun onConnected(session: Session, code: String) {
+        val host = session.host()
+        storage.pairedCode = code
+        storage.pairedName = host.name
+        SessionHolder.close()
+        SessionHolder.session = session
+        status.text = "Connected to ${host.name}" + if (host.usb) " over USB" else ""
+        startActivity(Intent(this, PadActivity::class.java))
     }
 
     private fun fail(t: Throwable) {

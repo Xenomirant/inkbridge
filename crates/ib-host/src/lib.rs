@@ -12,6 +12,7 @@ pub mod scroll;
 pub mod server;
 pub mod storage;
 pub mod touch;
+pub mod usb;
 pub mod video;
 
 pub use server::{Host, HostConfig};

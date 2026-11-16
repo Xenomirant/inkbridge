@@ -13,9 +13,8 @@ use ib_session::PairingStore;
 use ib_transport::PairingOffer;
 use tracing_subscriber::EnvFilter;
 
-/// Below 32768, outside the ranges Windows (49152+), Linux (32768+) and WSL hand
-/// out automatically, so it is rarely taken; `Host` falls back if it is.
-const DEFAULT_PORT: u16 = 27840;
+/// `Host` falls back to a free port if this one is taken.
+const DEFAULT_PORT: u16 = ib_protocol::DEFAULT_PORT;
 
 struct Args {
     port: u16,
@@ -40,14 +39,40 @@ fn parse_args() -> anyhow::Result<Args> {
             }
             "--pair" => args.force_pairing = true,
             "--fake-sink" => args.fake_sink = true,
+            "--fix-usb-routing" => std::process::exit(run_routing(true)),
+            "--undo-usb-routing" => std::process::exit(run_routing(false)),
             "-h" | "--help" => {
-                println!("inkbridge-host [--port N] [--pair] [--fake-sink]");
+                println!(
+                    "inkbridge-host [--port N] [--pair] [--fake-sink]\n\
+                     inkbridge-host --fix-usb-routing    keep internet traffic off USB-tethered tablets (asks for admin once)\n\
+                     inkbridge-host --undo-usb-routing   restore Windows' automatic routing for them"
+                );
                 std::process::exit(0);
             }
             other => anyhow::bail!("unknown argument: {other}"),
         }
     }
     Ok(args)
+}
+
+fn run_routing(fix: bool) -> i32 {
+    match ib_host::platform::set_usb_routing(fix) {
+        Ok(()) => {
+            println!(
+                "{}",
+                if fix {
+                    "Done: USB-tethered tablets no longer carry this PC's internet traffic. Undo with --undo-usb-routing."
+                } else {
+                    "Done: Windows chooses routes for USB-tethered tablets automatically again."
+                }
+            );
+            0
+        }
+        Err(e) => {
+            eprintln!("Could not change routing: {e:#}");
+            1
+        }
+    }
 }
 
 fn show_offer(offer: &PairingOffer, dir: &std::path::Path, host_name: &str) {

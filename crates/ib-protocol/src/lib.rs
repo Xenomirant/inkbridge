@@ -25,4 +25,9 @@ pub use control::{
 };
 pub use pen::{Buttons, PenBatch, PenSample, PenState, Tool};
 pub use version::{PROTOCOL_VERSION, ProtocolVersion};
+
+/// Default UDP port: the host listens here (Wi-Fi), and a tablet listens here
+/// on its USB tethering link for the host to dial in. Below 32768, outside
+/// the ranges operating systems hand out automatically.
+pub const DEFAULT_PORT: u16 = 27840;
 pub use video::{FrameKind, VideoChunk};
