@@ -17,7 +17,15 @@ pub use tracker::{PenTracker, Step};
 pub use windows::WindowsPenSink;
 
 use ib_geometry::DesktopPoint;
-use ib_protocol::{PenFeatures, PenSample};
+use ib_protocol::{PenFeatures, PenSample, TouchPhase};
+
+/// One finger of a touch frame, already mapped to desktop coordinates.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TouchPoint {
+    pub id: u8,
+    pub at: DesktopPoint,
+    pub phase: TouchPhase,
+}
 
 /// The best pen backend available on this OS.
 pub fn platform_sink() -> Result<Box<dyn PenSink>, InjectError> {
@@ -58,11 +66,11 @@ pub trait PenSink: Send {
     /// Injects one sanitised sample at a desktop position.
     fn emit(&mut self, sample: &PenSample, at: DesktopPoint) -> Result<(), InjectError>;
 
-    /// Scrolls by a finger movement given in desktop pixels (positive `dy`
-    /// = fingers moved down = scroll up), at the current pointer position.
-    fn scroll(&mut self, _dx_px: f64, _dy_px: f64) -> Result<(), InjectError> {
+    /// Injects one multi-finger touch frame (all fingers of the gesture).
+    /// The OS turns it into native panning, inertia and pinch-zoom.
+    fn touch(&mut self, _frame: &[TouchPoint]) -> Result<(), InjectError> {
         Err(InjectError::Unavailable(
-            "scrolling not supported by this backend".into(),
+            "touch input not supported by this backend".into(),
         ))
     }
 
@@ -75,7 +83,7 @@ pub trait PenSink: Send {
 #[derive(Debug, Default)]
 pub struct FakePenSink {
     pub events: Vec<(PenSample, DesktopPoint)>,
-    pub scrolls: Vec<(f64, f64)>,
+    pub touch_frames: Vec<Vec<TouchPoint>>,
     pub releases: usize,
 }
 
@@ -100,8 +108,8 @@ impl PenSink for FakePenSink {
         Ok(())
     }
 
-    fn scroll(&mut self, dx_px: f64, dy_px: f64) -> Result<(), InjectError> {
-        self.scrolls.push((dx_px, dy_px));
+    fn touch(&mut self, frame: &[TouchPoint]) -> Result<(), InjectError> {
+        self.touch_frames.push(frame.to_vec());
         Ok(())
     }
 

@@ -15,43 +15,39 @@
 
 use ib_geometry::DesktopPoint;
 use ib_protocol::{Buttons, PenFeatures, PenSample, Tool};
-use windows::Win32::Foundation::POINT;
+use windows::Win32::Foundation::{POINT, RECT};
 use windows::Win32::UI::Controls::{
     CreateSyntheticPointerDevice, DestroySyntheticPointerDevice, HSYNTHETICPOINTERDEVICE,
     POINTER_FEEDBACK_DEFAULT, POINTER_TYPE_INFO, POINTER_TYPE_INFO_0,
 };
-use windows::Win32::UI::Input::KeyboardAndMouse::{
-    INPUT, INPUT_0, INPUT_MOUSE, MOUSEEVENTF_HWHEEL, MOUSEEVENTF_WHEEL, MOUSEINPUT, SendInput,
-};
 use windows::Win32::UI::Input::Pointer::{
     InjectSyntheticPointerInput, POINTER_CHANGE_FIRSTBUTTON_DOWN, POINTER_CHANGE_FIRSTBUTTON_UP,
-    POINTER_CHANGE_NONE, POINTER_FLAG_DOWN, POINTER_FLAG_FIRSTBUTTON, POINTER_FLAG_INCONTACT,
-    POINTER_FLAG_INRANGE, POINTER_FLAG_PRIMARY, POINTER_FLAG_UP, POINTER_FLAG_UPDATE,
-    POINTER_FLAGS, POINTER_INFO, POINTER_PEN_INFO,
+    POINTER_CHANGE_NONE, POINTER_FLAG_CANCELED, POINTER_FLAG_DOWN, POINTER_FLAG_FIRSTBUTTON,
+    POINTER_FLAG_INCONTACT, POINTER_FLAG_INRANGE, POINTER_FLAG_PRIMARY, POINTER_FLAG_UP,
+    POINTER_FLAG_UPDATE, POINTER_FLAGS, POINTER_INFO, POINTER_PEN_INFO, POINTER_TOUCH_INFO,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     PEN_FLAG_BARREL, PEN_FLAG_ERASER, PEN_FLAG_INVERTED, PEN_MASK_PRESSURE, PEN_MASK_ROTATION,
-    PEN_MASK_TILT_X, PEN_MASK_TILT_Y, PT_PEN,
+    PEN_MASK_TILT_X, PEN_MASK_TILT_Y, PT_PEN, PT_TOUCH, TOUCH_MASK_CONTACTAREA,
 };
 
 use crate::tracker::{PenTracker, Step};
-use crate::{InjectError, PenSink};
+use crate::{InjectError, PenSink, TouchPoint};
+use ib_protocol::TouchPhase;
 
 /// Windows reports pen pressure in `0..=1024`.
 const MAX_PRESSURE: f32 = 1024.0;
 
-/// Wheel units per pixel of finger movement. One notch (`WHEEL_DELTA` = 120)
-/// scrolls roughly 100 px in most apps, so content tracks the fingers.
-const WHEEL_PER_PX: f64 = 1.2;
+/// Maximum simultaneous fingers on the synthetic touch device.
+const MAX_TOUCHES: u32 = ib_protocol::TouchContact::MAX as u32;
 
 #[derive(Debug)]
 pub struct WindowsPenSink {
     device: HSYNTHETICPOINTERDEVICE,
     tracker: PenTracker,
     last_point: POINT,
-    /// Fractional wheel units not yet sent (smooth scrolling sends
-    /// sub-notch amounts; apps without high-resolution support accumulate).
-    wheel_rest: (f64, f64),
+    /// Synthetic touch device, created on first use.
+    touch_device: Option<HSYNTHETICPOINTERDEVICE>,
 }
 
 // SAFETY: a synthetic pointer device handle is a process-wide user32 object,
@@ -71,7 +67,7 @@ impl WindowsPenSink {
             device,
             tracker: PenTracker::new(),
             last_point: POINT::default(),
-            wheel_rest: (0.0, 0.0),
+            touch_device: None,
         })
     }
 
@@ -172,44 +168,76 @@ impl PenSink for WindowsPenSink {
         Ok(())
     }
 
-    fn scroll(&mut self, dx_px: f64, dy_px: f64) -> Result<(), InjectError> {
-        // Fingers down → content down → wheel up (positive). Fingers right →
-        // content right → scroll left (negative horizontal wheel).
-        let wy = self.wheel_rest.1 + dy_px * WHEEL_PER_PX;
-        let wx = self.wheel_rest.0 - dx_px * WHEEL_PER_PX;
-        let (iy, ix) = (wy.trunc() as i32, wx.trunc() as i32);
-        self.wheel_rest = (wx - f64::from(ix), wy - f64::from(iy));
-        let wheel = |amount: i32, flags| INPUT {
-            r#type: INPUT_MOUSE,
-            Anonymous: INPUT_0 {
-                mi: MOUSEINPUT {
-                    mouseData: amount.cast_unsigned(),
-                    dwFlags: flags,
-                    ..Default::default()
-                },
-            },
-        };
-        let mut inputs = Vec::with_capacity(2);
-        if iy != 0 {
-            inputs.push(wheel(iy, MOUSEEVENTF_WHEEL));
-        }
-        if ix != 0 {
-            inputs.push(wheel(ix, MOUSEEVENTF_HWHEEL));
-        }
-        if inputs.is_empty() {
+    fn touch(&mut self, frame: &[TouchPoint]) -> Result<(), InjectError> {
+        if frame.is_empty() {
             return Ok(());
         }
-        // INPUT is a few dozen bytes; the size always fits in i32.
-        let size = i32::try_from(size_of::<INPUT>()).expect("INPUT size fits in i32");
-        // SAFETY: `inputs` is a valid slice of fully initialised INPUT records.
-        let sent = unsafe { SendInput(&inputs, size) };
-        if sent as usize == inputs.len() {
-            Ok(())
+        let device = if let Some(d) = self.touch_device {
+            d
         } else {
-            Err(InjectError::Rejected(
-                "SendInput dropped scroll events".into(),
-            ))
-        }
+            // SAFETY: plain FFI call with valid constant arguments.
+            let d = unsafe {
+                CreateSyntheticPointerDevice(PT_TOUCH, MAX_TOUCHES, POINTER_FEEDBACK_DEFAULT)
+            }
+            .map_err(|e| {
+                InjectError::Unavailable(format!("Windows refused a synthetic touch device: {e}"))
+            })?;
+            self.touch_device = Some(d);
+            d
+        };
+        let infos: Vec<POINTER_TYPE_INFO> = frame
+            .iter()
+            .take(MAX_TOUCHES as usize)
+            .enumerate()
+            .map(|(i, t)| {
+                let flags = match t.phase {
+                    TouchPhase::Down => {
+                        POINTER_FLAG_DOWN | POINTER_FLAG_INRANGE | POINTER_FLAG_INCONTACT
+                    }
+                    TouchPhase::Move => {
+                        POINTER_FLAG_UPDATE | POINTER_FLAG_INRANGE | POINTER_FLAG_INCONTACT
+                    }
+                    TouchPhase::Up => POINTER_FLAG_UP,
+                    TouchPhase::Cancel => POINTER_FLAG_UP | POINTER_FLAG_CANCELED,
+                };
+                let flags = if i == 0 {
+                    flags | POINTER_FLAG_PRIMARY
+                } else {
+                    flags
+                };
+                let p = POINT {
+                    x: t.at.x.round() as i32,
+                    y: t.at.y.round() as i32,
+                };
+                POINTER_TYPE_INFO {
+                    r#type: PT_TOUCH,
+                    Anonymous: POINTER_TYPE_INFO_0 {
+                        touchInfo: POINTER_TOUCH_INFO {
+                            pointerInfo: POINTER_INFO {
+                                pointerType: PT_TOUCH,
+                                pointerId: u32::from(t.id),
+                                pointerFlags: POINTER_FLAGS(flags.0),
+                                ptPixelLocation: p,
+                                ..Default::default()
+                            },
+                            touchMask: TOUCH_MASK_CONTACTAREA,
+                            // A fingertip-sized contact area.
+                            rcContact: RECT {
+                                left: p.x - 4,
+                                top: p.y - 4,
+                                right: p.x + 4,
+                                bottom: p.y + 4,
+                            },
+                            ..Default::default()
+                        },
+                    },
+                }
+            })
+            .collect();
+        // SAFETY: `device` is a live touch device and `infos` are fully
+        // initialised touch records, one per finger of the frame.
+        unsafe { InjectSyntheticPointerInput(device, &infos) }
+            .map_err(|e| InjectError::Rejected(e.to_string()))
     }
 
     fn release(&mut self) -> Result<(), InjectError> {
@@ -230,5 +258,9 @@ impl Drop for WindowsPenSink {
         // SAFETY: the handle came from CreateSyntheticPointerDevice and is
         // destroyed exactly once.
         unsafe { DestroySyntheticPointerDevice(self.device) };
+        if let Some(d) = self.touch_device.take() {
+            // SAFETY: created once by CreateSyntheticPointerDevice, destroyed once.
+            unsafe { DestroySyntheticPointerDevice(d) };
+        }
     }
 }

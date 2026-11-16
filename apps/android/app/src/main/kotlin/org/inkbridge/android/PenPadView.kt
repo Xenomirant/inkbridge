@@ -8,6 +8,8 @@ import android.graphics.Paint
 import android.graphics.RectF
 import android.view.MotionEvent
 import android.view.View
+import org.inkbridge.core.Finger
+import org.inkbridge.core.FingerPhase
 import org.inkbridge.core.PenContact
 import org.inkbridge.core.Session
 import org.inkbridge.core.StylusSample
@@ -36,9 +38,9 @@ class PenPadView(context: Context, private val session: Session) : View(context)
     private var lastX = Float.NaN
     private var lastY = Float.NaN
 
-    /** Two-finger scroll state: previous centroid, or NaN when not scrolling. */
-    private var scrollX = Float.NaN
-    private var scrollY = Float.NaN
+    /** Active multi-finger gesture: Android pointer id → wire finger id. */
+    private val gesture = LinkedHashMap<Int, Int>()
+    private var lastFrame: List<Finger> = emptyList()
 
     /** Last state sent reliably; a change triggers a transition message. */
     private var lastContact: PenContact? = null
@@ -77,6 +79,7 @@ class PenPadView(context: Context, private val session: Session) : View(context)
         val i = StylusMapper.stylusIndex(ev)
         if (i < 0) return onFingers(ev)
         if (ev.actionMasked == MotionEvent.ACTION_DOWN) {
+            cancelGesture() // the pen wins over resting fingers
             removeCallbacks(outOfRange)
             requestUnbufferedDispatch(ev) // full sample rate, no 60 Hz batching
         }
@@ -93,26 +96,78 @@ class PenPadView(context: Context, private val session: Session) : View(context)
     }
 
     /**
-     * Fingers: two-finger drag scrolls the computer; a single finger or a
-     * resting palm does nothing (palm rejection while writing).
+     * Fingers. Two or more fingers form a gesture that the computer receives
+     * as native touch (pan/scroll with inertia, pinch-zoom). A single finger
+     * or a resting palm does nothing, so writing is never disturbed.
      */
     private fun onFingers(ev: MotionEvent): Boolean {
-        val fingers = (0 until ev.pointerCount).filter { ev.getToolType(it) == MotionEvent.TOOL_TYPE_FINGER }
-        val lifting = ev.actionMasked == MotionEvent.ACTION_POINTER_UP
-        val active = if (lifting) fingers.filter { it != ev.actionIndex } else fingers
-        if (active.size != 2 || ev.actionMasked == MotionEvent.ACTION_UP || ev.actionMasked == MotionEvent.ACTION_CANCEL) {
-            scrollX = Float.NaN; scrollY = Float.NaN
+        val action = ev.actionMasked
+        val leaving = if (action == MotionEvent.ACTION_POINTER_UP || action == MotionEvent.ACTION_UP) ev.actionIndex else -1
+        val down = (0 until ev.pointerCount).filter {
+            ev.getToolType(it) == MotionEvent.TOOL_TYPE_FINGER && it != leaving
+        }
+        if (gesture.isEmpty()) {
+            if (down.size >= 2 && action != MotionEvent.ACTION_CANCEL) {
+                send(down.map { finger(ev, it, assignId(ev.getPointerId(it)), FingerPhase.DOWN) })
+            }
             return true
         }
-        val cx = active.map { ev.getX(it) }.average().toFloat()
-        val cy = active.map { ev.getY(it) }.average().toFloat()
-        if (!scrollX.isNaN() && ev.actionMasked == MotionEvent.ACTION_MOVE && area.width() > 0f) {
-            val dx = (cx - scrollX) / area.width()
-            val dy = (cy - scrollY) / area.height()
-            if (dx != 0f || dy != 0f) runCatching { session.sendScroll(dx, dy) }
+        when {
+            action == MotionEvent.ACTION_CANCEL -> endGesture(ev, FingerPhase.CANCEL)
+            down.size < 2 -> endGesture(ev, FingerPhase.UP)
+            else -> {
+                val frame = ArrayList<Finger>()
+                for (i in down) {
+                    val pid = ev.getPointerId(i)
+                    val known = gesture[pid]
+                    frame += if (known != null) finger(ev, i, known, FingerPhase.MOVE)
+                    else finger(ev, i, assignId(pid), FingerPhase.DOWN)
+                }
+                if (leaving >= 0) gesture.remove(ev.getPointerId(leaving))?.let { id ->
+                    frame += finger(ev, leaving, id, FingerPhase.UP)
+                }
+                send(frame)
+            }
         }
-        scrollX = cx; scrollY = cy
         return true
+    }
+
+    /** Lifts (or cancels) every finger of the gesture at its last position. */
+    private fun endGesture(ev: MotionEvent, phase: FingerPhase) {
+        val frame = gesture.mapNotNull { (pid, id) ->
+            val i = ev.findPointerIndex(pid)
+            if (i >= 0) finger(ev, i, id, phase) else null
+        }
+        gesture.clear()
+        send(frame)
+        lastFrame = emptyList()
+    }
+
+    private fun assignId(pointerId: Int): Int {
+        val id = (0 until 5).first { it !in gesture.values }
+        gesture[pointerId] = id
+        return id
+    }
+
+    private fun finger(ev: MotionEvent, i: Int, id: Int, phase: FingerPhase) = Finger(
+        id = id.toUByte(),
+        x = ((ev.getX(i) - area.left) / area.width()).coerceIn(0f, 1f),
+        y = ((ev.getY(i) - area.top) / area.height()).coerceIn(0f, 1f),
+        phase = phase,
+    )
+
+    private fun send(frame: List<Finger>) {
+        if (frame.isEmpty() || area.width() <= 0f) return
+        runCatching { session.sendTouch(frame) }
+        lastFrame = frame.filter { it.phase == FingerPhase.DOWN || it.phase == FingerPhase.MOVE }
+    }
+
+    /** Cancels an active gesture at the fingers' last positions (no tap or click). */
+    private fun cancelGesture() {
+        if (gesture.isEmpty()) return
+        gesture.clear()
+        send(lastFrame.map { it.copy(phase = FingerPhase.CANCEL) })
+        lastFrame = emptyList()
     }
 
     override fun onHoverEvent(ev: MotionEvent): Boolean {

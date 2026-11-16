@@ -4,6 +4,7 @@ import android.graphics.Color
 import android.os.Bundle
 import android.view.Gravity
 import android.view.WindowManager
+import android.widget.Button
 import android.widget.FrameLayout
 import android.widget.TextView
 import androidx.activity.ComponentActivity
@@ -37,10 +38,17 @@ class PadActivity : ComponentActivity() {
         val pad = PenPadView(this, session)
         info = TextView(this).apply {
             textSize = 13f; alpha = 0.7f; setPadding(24, 12, 24, 12); setTextColor(Color.DKGRAY)
-            setOnClickListener { pad.clearInk() } // tap the label (with a finger) to clear local ink
+        }
+        val clear = Button(this).apply {
+            text = "Clear"
+            alpha = 0.85f
+            setOnClickListener { pad.clearInk() }
         }
         setContentView(FrameLayout(this).apply {
             addView(pad)
+            addView(clear, FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.START,
+            ))
             addView(info, FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.END,
             ))

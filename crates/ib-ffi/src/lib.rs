@@ -18,7 +18,7 @@ use std::time::Duration;
 
 use ib_protocol::{
     Buttons, Capabilities, ClientHello, ControlMessage, PROTOCOL_VERSION, PenBatch, PenFeatures,
-    PenSample, PenState, Tool,
+    PenSample, PenState, Tool, TouchContact, TouchPhase,
 };
 use ib_session::{SessionError, client_handshake};
 use ib_transport::{ClientEndpoint, Connection, Identity, PairingOffer, PenChannel};
@@ -75,6 +75,39 @@ pub struct HostInfo {
     pub tilt: bool,
     pub hover: bool,
     pub eraser: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum FingerPhase {
+    Down,
+    Move,
+    Up,
+    Cancel,
+}
+
+/// One finger of a gesture; `x`/`y` normalised to the drawing area.
+#[derive(Debug, Clone, Copy, uniffi::Record)]
+pub struct Finger {
+    pub id: u8,
+    pub x: f32,
+    pub y: f32,
+    pub phase: FingerPhase,
+}
+
+impl From<Finger> for TouchContact {
+    fn from(f: Finger) -> Self {
+        Self {
+            id: f.id,
+            x: f.x,
+            y: f.y,
+            phase: match f.phase {
+                FingerPhase::Down => TouchPhase::Down,
+                FingerPhase::Move => TouchPhase::Move,
+                FingerPhase::Up => TouchPhase::Up,
+                FingerPhase::Cancel => TouchPhase::Cancel,
+            },
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
@@ -327,11 +360,17 @@ impl Session {
             .map_err(|_| InkbridgeError::Transport("session closed".into()))
     }
 
-    /// Two-finger scroll: finger movement as a fraction of the drawing area
-    /// (positive `dy` = fingers moved down). Never blocks.
-    pub fn send_scroll(&self, dx: f32, dy: f32) -> Result<(), InkbridgeError> {
+    /// Sends one multi-finger gesture frame (all fingers of the gesture).
+    /// The computer injects it as native touch: panning with inertia,
+    /// pinch-zoom. Never blocks.
+    pub fn send_touch(&self, fingers: Vec<Finger>) -> Result<(), InkbridgeError> {
+        let contacts = fingers
+            .into_iter()
+            .take(TouchContact::MAX)
+            .map(Into::into)
+            .collect();
         self.control_tx
-            .send(ControlMessage::Scroll { dx, dy })
+            .send(ControlMessage::Touch(contacts))
             .map_err(|_| InkbridgeError::Transport("session closed".into()))
     }
 

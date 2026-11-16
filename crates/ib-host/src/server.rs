@@ -167,8 +167,8 @@ impl Host {
                     })
                     .await?;
                 }
-                ControlMessage::Scroll { dx, dy } => {
-                    let _ = self.pen.send(PenInput::Scroll { dx, dy });
+                ControlMessage::Touch(contacts) => {
+                    let _ = self.pen.send(PenInput::Touch(contacts));
                 }
                 ControlMessage::Goodbye => return Ok(()),
                 other => tracing::debug!(?other, "ignored control message"),

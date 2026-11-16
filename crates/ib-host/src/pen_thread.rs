@@ -4,24 +4,27 @@
 //! a channel from the async network tasks; each sample is mapped to desktop
 //! coordinates and injected immediately.
 
-use std::sync::mpsc::{Receiver, Sender, channel};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
 use std::thread::JoinHandle;
+use std::time::Duration;
 
-use ib_geometry::{Region, Rotation, to_desktop};
-use ib_inject::{InjectError, PenSink};
-use ib_protocol::{PenBatch, PenSample};
+use ib_geometry::{DesktopPoint, Region, Rotation, to_desktop};
+use ib_inject::{InjectError, PenSink, TouchPoint};
+use ib_protocol::{PenBatch, PenSample, TouchContact};
 use ib_session::PenStream;
+
+use crate::touch::{TouchMapper, TouchMapping};
+
+/// How often resting fingers are re-sent so the OS keeps them down.
+const TOUCH_KEEPALIVE: Duration = Duration::from_millis(50);
 
 #[derive(Debug)]
 pub enum PenInput {
     Batch(PenBatch),
     Transition(PenSample),
     SetRegion(Region),
-    /// Two-finger scroll in region-normalised units.
-    Scroll {
-        dx: f32,
-        dy: f32,
-    },
+    /// Multi-finger gesture frame.
+    Touch(Vec<TouchContact>),
     /// The tablet disconnected: release the pen and reset sequence state.
     Disconnected,
     Shutdown,
@@ -51,35 +54,59 @@ pub fn spawn(
 fn run(mut sink: Box<dyn PenSink>, mut region: Region, rx: &Receiver<PenInput>) {
     tracing::info!(backend = sink.name(), ?region, "pen thread ready");
     let mut stream = PenStream::new();
-    let emit = |sink: &mut Box<dyn PenSink>, s: PenSample, region: Region| {
-        let at = to_desktop(region, Rotation::None, s.x, s.y);
-        if let Err(e) = sink.emit(&s, at) {
-            tracing::warn!("{e}");
+    // M1 sessions are pen-only (no image on the tablet): anchor at the cursor.
+    let mut touch = TouchMapper::new(TouchMapping::AnchoredAtPointer);
+    let mut pointer = DesktopPoint {
+        x: f64::from(region.x),
+        y: f64::from(region.y),
+    };
+    let inject_touch = |sink: &mut Box<dyn PenSink>, frame: &[TouchPoint]| {
+        if let Err(e) = sink.touch(frame) {
+            tracing::debug!("{e}");
         }
     };
-    while let Ok(input) = rx.recv() {
+    loop {
+        let input = match rx.recv_timeout(TOUCH_KEEPALIVE) {
+            Ok(input) => input,
+            Err(RecvTimeoutError::Timeout) => {
+                if let Some(frame) = touch.keep_alive() {
+                    let frame = frame.to_vec();
+                    inject_touch(&mut sink, &frame);
+                }
+                continue;
+            }
+            Err(RecvTimeoutError::Disconnected) => break,
+        };
         match input {
             PenInput::Batch(batch) => {
                 for s in stream.on_batch(batch) {
-                    emit(&mut sink, s, region);
+                    pointer = emit(&mut sink, s, region);
                 }
             }
             PenInput::Transition(t) => {
                 if let Some(s) = stream.on_transition(t) {
-                    emit(&mut sink, s, region);
+                    pointer = emit(&mut sink, s, region);
                 }
             }
             PenInput::SetRegion(r) => region = r,
-            PenInput::Scroll { dx, dy } => {
-                let (dx, dy) = (f64::from(dx), f64::from(dy));
-                if dx.is_finite() && dy.is_finite() {
-                    let px = (dx * f64::from(region.width), dy * f64::from(region.height));
-                    if let Err(e) = sink.scroll(px.0, px.1) {
-                        tracing::debug!("{e}");
-                    }
-                }
+            PenInput::Touch(contacts) => {
+                let contacts: Vec<TouchContact> = contacts
+                    .into_iter()
+                    .filter(|c| c.x.is_finite() && c.y.is_finite())
+                    .map(|c| TouchContact {
+                        x: c.x.clamp(0.0, 1.0),
+                        y: c.y.clamp(0.0, 1.0),
+                        ..c
+                    })
+                    .collect();
+                let frame = touch.map(&contacts, region, pointer);
+                inject_touch(&mut sink, &frame);
             }
             PenInput::Disconnected => {
+                let cancelled = touch.cancel();
+                if !cancelled.is_empty() {
+                    inject_touch(&mut sink, &cancelled);
+                }
                 if stream.release().is_some()
                     && let Err(e) = sink.release()
                 {
@@ -91,6 +118,15 @@ fn run(mut sink: Box<dyn PenSink>, mut region: Region, rx: &Receiver<PenInput>) 
         }
     }
     let _ = sink.release();
+}
+
+/// Injects one pen sample; returns where it landed (the pointer position).
+fn emit(sink: &mut Box<dyn PenSink>, s: PenSample, region: Region) -> DesktopPoint {
+    let at = to_desktop(region, Rotation::None, s.x, s.y);
+    if let Err(e) = sink.emit(&s, at) {
+        tracing::warn!("{e}");
+    }
+    at
 }
 
 #[cfg(test)]

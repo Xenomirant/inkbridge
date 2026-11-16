@@ -55,6 +55,31 @@ pub struct Reject {
     pub host_version: ProtocolVersion,
 }
 
+/// Phase of one finger in a [`ControlMessage::Touch`] frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum TouchPhase {
+    Down,
+    Move,
+    Up,
+    /// The gesture was aborted (e.g. a pen came in range): no click/tap.
+    Cancel,
+}
+
+/// One finger. `x`/`y` are normalised to the streamed region, like pen
+/// coordinates; `id` is stable for the life of the finger.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct TouchContact {
+    pub id: u8,
+    pub x: f32,
+    pub y: f32,
+    pub phase: TouchPhase,
+}
+
+impl TouchContact {
+    /// Largest number of simultaneous fingers the protocol carries.
+    pub const MAX: usize = 5;
+}
+
 /// Messages on the reliable control stream.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ControlMessage {
@@ -85,13 +110,10 @@ pub enum ControlMessage {
     /// Pen contact/tool/button transitions, mirrored reliably so state can
     /// never get stuck if the corresponding datagram is lost.
     PenTransition(PenSample),
-    /// Two-finger scroll: finger movement since the last message, as a
-    /// fraction of the streamed region (same units as pen coordinates).
-    /// Positive `dy` = fingers moved down = content follows them (scroll up).
-    Scroll {
-        dx: f32,
-        dy: f32,
-    },
+    /// Multi-finger gesture frame (pan/scroll, pinch-zoom), injected as
+    /// native touch so the host OS applies its own panning and inertia.
+    /// Every frame lists all fingers of the gesture.
+    Touch(Vec<TouchContact>),
     /// Ask the host for an immediate keyframe (decoder reset, packet loss).
     RequestKeyframe,
     /// Bitrate hint from the client's congestion estimate, kbit/s.
