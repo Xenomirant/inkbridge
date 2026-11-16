@@ -108,6 +108,82 @@ pub fn region_for_viewport(display: Region, width: u32, height: u32) -> Region {
     }
 }
 
+/// Smallest view width (px): zooming further would only magnify pixels.
+pub const MIN_VIEW_WIDTH: u32 = 320;
+
+/// Makes a requested view of the desktop valid for a tablet whose drawing
+/// area has the aspect `aspect` (width / height):
+/// - same aspect as the tablet (expanded around the requested centre), so the
+///   picture fills the tablet without distortion;
+/// - at least [`MIN_VIEW_WIDTH`] wide;
+/// - inside `display`; a view larger than the display becomes the whole
+///   display (the tablet letterboxes it).
+pub fn clamp_view(display: Region, requested: Region, aspect: f64) -> Region {
+    if !(aspect.is_finite() && aspect > 0.0) || display.width == 0 || display.height == 0 {
+        return display;
+    }
+    let cx = f64::from(requested.x) + f64::from(requested.width) / 2.0;
+    let cy = f64::from(requested.y) + f64::from(requested.height) / 2.0;
+    // Grow the smaller side so the rectangle has the tablet's aspect.
+    let mut w = f64::from(requested.width.max(1));
+    let mut h = f64::from(requested.height.max(1));
+    if w / h < aspect {
+        w = h * aspect;
+    } else {
+        h = w / aspect;
+    }
+    if w < f64::from(MIN_VIEW_WIDTH) {
+        w = f64::from(MIN_VIEW_WIDTH);
+        h = w / aspect;
+    }
+    let (dw, dh) = (f64::from(display.width), f64::from(display.height));
+    if w >= dw || h >= dh {
+        // Doesn't fit: show as much as possible with the tablet's shape, or
+        // simply the whole display when that's what was asked for.
+        let fitted = fit_aspect(display, aspect);
+        return if w >= dw && h >= dh {
+            display
+        } else {
+            fitted_around(display, fitted, cx, cy)
+        };
+    }
+    let even = |v: f64| ((v.round() as u32) & !1).max(2);
+    let (w, h) = (even(w), even(h));
+    let x = (cx - f64::from(w) / 2.0).clamp(
+        f64::from(display.x),
+        f64::from(display.x) + dw - f64::from(w),
+    );
+    let y = (cy - f64::from(h) / 2.0).clamp(
+        f64::from(display.y),
+        f64::from(display.y) + dh - f64::from(h),
+    );
+    Region {
+        x: x.round() as i32,
+        y: y.round() as i32,
+        width: w,
+        height: h,
+    }
+}
+
+/// `fitted` (already the right size) moved as close to centre (`cx`, `cy`)
+/// as `display` allows.
+fn fitted_around(display: Region, fitted: Region, cx: f64, cy: f64) -> Region {
+    let (w, h) = (f64::from(fitted.width), f64::from(fitted.height));
+    let x = (cx - w / 2.0).clamp(
+        f64::from(display.x),
+        f64::from(display.x) + f64::from(display.width) - w,
+    );
+    let y = (cy - h / 2.0).clamp(
+        f64::from(display.y),
+        f64::from(display.y) + f64::from(display.height) - h,
+    );
+    Region {
+        x: x.round() as i32,
+        y: y.round() as i32,
+        ..fitted
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -132,6 +208,81 @@ mod tests {
     fn rotation_cw90_maps_client_top_left_to_region_bottom_left() {
         let p = to_desktop(MONITOR, Rotation::Cw90, 0.0, 0.0);
         assert_eq!((p.x, p.y), (-1920.0, 1079.0));
+    }
+
+    const DISPLAY: Region = Region {
+        x: 0,
+        y: 0,
+        width: 2560,
+        height: 1440,
+    };
+
+    #[test]
+    fn view_takes_tablet_aspect_and_stays_inside() {
+        // Portrait tablet (900:1440), zoomed onto the top-right corner.
+        let v = clamp_view(
+            DISPLAY,
+            Region {
+                x: 2400,
+                y: -50,
+                width: 400,
+                height: 400,
+            },
+            900.0 / 1440.0,
+        );
+        assert!(
+            (f64::from(v.width) / f64::from(v.height) - 0.625).abs() < 0.01,
+            "{v:?}"
+        );
+        assert!(
+            v.x >= 0
+                && v.y >= 0
+                && i64::from(v.x) + i64::from(v.width) <= 2560
+                && i64::from(v.y) + i64::from(v.height) <= 1440,
+            "{v:?}"
+        );
+    }
+
+    #[test]
+    fn tiny_view_is_limited_and_huge_view_is_the_whole_display() {
+        let tiny = clamp_view(
+            DISPLAY,
+            Region {
+                x: 1000,
+                y: 700,
+                width: 10,
+                height: 10,
+            },
+            16.0 / 10.0,
+        );
+        assert_eq!(tiny.width, MIN_VIEW_WIDTH);
+        let huge = clamp_view(
+            DISPLAY,
+            Region {
+                x: -500,
+                y: -500,
+                width: 9000,
+                height: 9000,
+            },
+            16.0 / 10.0,
+        );
+        assert_eq!(huge, DISPLAY);
+    }
+
+    #[test]
+    fn too_tall_for_display_shows_largest_strip_near_centre() {
+        // Portrait tablet asking for a full-height strip on the left.
+        let v = clamp_view(
+            DISPLAY,
+            Region {
+                x: 0,
+                y: 0,
+                width: 900,
+                height: 2000,
+            },
+            900.0 / 1440.0,
+        );
+        assert_eq!((v.width, v.height, v.x, v.y), (900, 1440, 0, 0));
     }
 
     #[test]

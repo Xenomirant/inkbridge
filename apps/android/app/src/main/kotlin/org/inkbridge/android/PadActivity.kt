@@ -30,7 +30,7 @@ class PadActivity : ComponentActivity() {
                 return
             }
             val host = s.host()
-            pad.onHostRegion(host.regionWidth, host.regionHeight)
+            pad.onHostRegion(host.regionX, host.regionY, host.regionWidth, host.regionHeight)
             info.text = if (s.hasVideo()) {
                 val l = s.latency()
                 "%s · screen %.0f ms (p95 %.0f) · encode %.0f · net %.0f · %.0f fps · %.1f Mbit/s".format(
@@ -61,12 +61,31 @@ class PadActivity : ComponentActivity() {
             alpha = 0.85f
             setOnClickListener { pad.clearInk() }
         }
+        // Zoomable view: "View" switches two-finger gestures to moving and
+        // zooming the tablet's view of the desktop; "Fit" shows it all.
+        val view = Button(this).apply {
+            text = "View"
+            alpha = 0.85f
+            setOnClickListener {
+                pad.viewMode = !pad.viewMode
+                text = if (pad.viewMode) "View ✓" else "View"
+            }
+        }
+        val fit = Button(this).apply {
+            text = "Fit"
+            alpha = 0.85f
+            setOnClickListener { pad.fitWholeDisplay() }
+        }
+        val tools = android.widget.LinearLayout(this).apply {
+            orientation = android.widget.LinearLayout.HORIZONTAL
+            addView(clear); if (screen != null) { addView(view); addView(fit) }
+        }
         setContentView(FrameLayout(this).apply {
             setBackgroundColor(Color.BLACK)
             screen?.let { addView(it, FrameLayout.LayoutParams(0, 0)) }
             ink?.let { addView(it.view) }
             addView(pad)
-            addView(clear, FrameLayout.LayoutParams(
+            addView(tools, FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.START,
             ))
             addView(info, FrameLayout.LayoutParams(
@@ -91,6 +110,22 @@ class PadActivity : ComponentActivity() {
         pad.onAreaChanged = { r ->
             screen.layoutParams = FrameLayout.LayoutParams(r.width().toInt(), r.height().toInt()).apply {
                 leftMargin = r.left.toInt(); topMargin = r.top.toInt()
+            }
+        }
+        // View gesture preview: stretch and move the current picture so the
+        // selected part of the desktop fills the area, until the computer
+        // switches to capturing exactly that part.
+        pad.onViewPreview = { draft ->
+            val area = pad.activeArea()
+            val shown = pad.shownRegion()
+            if (draft.width() > 0f && shown.width() > 0f) {
+                val s = area.width() / draft.width() // screen px per desktop px
+                screen.layoutParams = FrameLayout.LayoutParams(
+                    (shown.width() * s).toInt(), (shown.height() * s).toInt(),
+                ).apply {
+                    leftMargin = (area.left + (shown.left - draft.left) * s).toInt()
+                    topMargin = (area.top + (shown.top - draft.top) * s).toInt()
+                }
             }
         }
         screen.holder.addCallback(object : SurfaceHolder.Callback {

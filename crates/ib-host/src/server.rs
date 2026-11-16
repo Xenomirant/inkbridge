@@ -21,9 +21,11 @@ use crate::video::VideoPipeline;
 const VIDEO_QUEUE: usize = 3;
 
 /// Per-session resources, released when the session ends.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct SessionState {
     video: Option<VideoPipeline>,
+    /// Aspect (width / height) of the tablet's drawing area.
+    aspect: f64,
 }
 
 #[derive(Debug, Clone)]
@@ -159,7 +161,10 @@ impl Host {
             .await?;
 
         // Video: only if both sides support it (codec negotiated).
-        let mut session = SessionState::default();
+        let mut session = SessionState {
+            video: None,
+            aspect: f64::from(hello.screen_width.max(1)) / f64::from(hello.screen_height.max(1)),
+        };
         let mut video_task = None;
         if settings.caps.negotiate_codec(&hello.caps).is_some() {
             let (tx, mut rx) = tokio::sync::mpsc::channel::<VideoChunk>(VIDEO_QUEUE);
@@ -219,9 +224,23 @@ impl Host {
     ) -> anyhow::Result<Region> {
         let region = ib_geometry::region_for_viewport(self.config.region, width, height);
         tracing::info!(width, height, ?region, "tablet viewport");
-        let _ = self.pen.send(PenInput::SetRegion(region));
-        ctl.send(&ControlMessage::SetRegion(region)).await?;
+        self.set_region(ctl, None, region).await?;
         Ok(region)
+    }
+
+    /// Maps `region` everywhere at once: pen, video capture, and the tablet.
+    async fn set_region(
+        &self,
+        ctl: &mut ib_transport::Control,
+        session: Option<&SessionState>,
+        region: Region,
+    ) -> anyhow::Result<()> {
+        let _ = self.pen.send(PenInput::SetRegion(region));
+        if let Some(v) = session.and_then(|s| s.video.as_ref()) {
+            v.set_region(region);
+        }
+        ctl.send(&ControlMessage::SetRegion(region)).await?;
+        Ok(())
     }
 
     async fn control_loop(
@@ -264,10 +283,17 @@ impl Host {
                     });
                 }
                 ControlMessage::Viewport { width, height } => {
+                    session.aspect = f64::from(width.max(1)) / f64::from(height.max(1));
                     let region = self.apply_viewport(ctl, width, height).await?;
                     if let Some(v) = &session.video {
                         v.set_region(region);
                     }
+                }
+                ControlMessage::RequestView(requested) => {
+                    let region =
+                        ib_geometry::clamp_view(self.config.region, requested, session.aspect);
+                    tracing::info!(?requested, ?region, "tablet view");
+                    self.set_region(ctl, Some(session), region).await?;
                 }
                 ControlMessage::RequestKeyframe => {
                     if let Some(v) = &session.video {

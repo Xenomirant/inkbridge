@@ -79,6 +79,7 @@ pub async fn host_handshake(
         codec: settings.caps.negotiate_codec(&hello.caps),
         caps,
         region: settings.region,
+        display: settings.region,
         transport: settings.transport,
     }))
     .await?;

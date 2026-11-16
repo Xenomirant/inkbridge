@@ -34,6 +34,8 @@ pub struct HostHello {
     pub codec: Option<VideoCodec>,
     /// Desktop area the tablet maps onto.
     pub region: Region,
+    /// The whole display the region lies on (bounds for the zoomable view).
+    pub display: Region,
     pub transport: TransportKind,
 }
 
@@ -108,6 +110,10 @@ pub enum ControlMessage {
     /// Change the mapped/streamed desktop region. Sent by the host after a
     /// session starts and whenever the region changes (e.g. on rotation).
     SetRegion(Region),
+    /// Client → host: show this part of the display (zoomable view), in
+    /// desktop pixels. The host adjusts it (tablet aspect, inside the
+    /// display, minimum size) and answers with `SetRegion`.
+    RequestView(Region),
     /// Client → host: the tablet's usable area changed (rotation, split
     /// screen), in physical pixels. The host answers with `SetRegion`.
     Viewport {

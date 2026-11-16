@@ -71,6 +71,14 @@ pub struct HostInfo {
     pub address: String,
     pub region_width: u32,
     pub region_height: u32,
+    /// Current region's position on the desktop (for the zoomable view).
+    pub region_x: i32,
+    pub region_y: i32,
+    /// The whole display (the zoomable view's bounds).
+    pub display_x: i32,
+    pub display_y: i32,
+    pub display_width: u32,
+    pub display_height: u32,
     pub pressure: bool,
     pub tilt: bool,
     pub hover: bool,
@@ -296,7 +304,7 @@ pub struct Session {
     closed: Arc<AtomicBool>,
     host: HostInfo,
     /// Current desktop region size, updated by the computer.
-    region: Arc<Mutex<(u32, u32)>>,
+    region: Arc<Mutex<ib_protocol::Region>>,
     /// Incoming encoded video, if the session streams the screen.
     video: Option<Mutex<mpsc::Receiver<VideoChunk>>>,
     telemetry: Arc<Mutex<Telemetry>>,
@@ -384,12 +392,7 @@ impl Session {
             Ok::<_, InkbridgeError>((endpoint, connection, control, host))
         })?;
 
-        let tasks = spawn_session_tasks(
-            &runtime,
-            control,
-            &connection,
-            (hello.region.width, hello.region.height),
-        );
+        let tasks = spawn_session_tasks(&runtime, control, &connection, hello.region);
         let video = hello.codec.map(|_| {
             spawn_video_receiver(
                 &runtime,
@@ -404,6 +407,12 @@ impl Session {
             address: connection.remote_addr().to_string(),
             region_width: hello.region.width,
             region_height: hello.region.height,
+            region_x: hello.region.x,
+            region_y: hello.region.y,
+            display_x: hello.display.x,
+            display_y: hello.display.y,
+            display_width: hello.display.width,
+            display_height: hello.display.height,
             pressure: hello.caps.pen.pressure,
             tilt: hello.caps.pen.tilt,
             hover: hello.caps.pen.hover,
@@ -428,9 +437,32 @@ impl Session {
     pub fn host(&self) -> HostInfo {
         let mut h = self.host.clone();
         if let Ok(g) = self.region.lock() {
-            (h.region_width, h.region_height) = *g;
+            h.region_x = g.x;
+            h.region_y = g.y;
+            h.region_width = g.width;
+            h.region_height = g.height;
         }
         h
+    }
+
+    /// Asks the computer to show this part of its display (zoomable view),
+    /// in desktop pixels. It adjusts the request (aspect, bounds, minimum
+    /// size) and the new region arrives via `host()`. Never blocks.
+    pub fn request_view(
+        &self,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> Result<(), InkbridgeError> {
+        self.control_tx
+            .send(ControlMessage::RequestView(ib_protocol::Region {
+                x,
+                y,
+                width,
+                height,
+            }))
+            .map_err(|_| InkbridgeError::Transport("session closed".into()))
     }
 
     /// Reports the drawing area size (after rotation or resizing). The
@@ -585,7 +617,7 @@ impl Session {
 struct SessionTasks {
     control_tx: mpsc::UnboundedSender<ControlMessage>,
     closed: Arc<AtomicBool>,
-    region: Arc<Mutex<(u32, u32)>>,
+    region: Arc<Mutex<ib_protocol::Region>>,
     telemetry: Arc<Mutex<Telemetry>>,
 }
 
@@ -596,7 +628,7 @@ fn spawn_session_tasks(
     runtime: &tokio::runtime::Runtime,
     control: ib_transport::Control,
     connection: &Connection,
-    initial_region: (u32, u32),
+    initial_region: ib_protocol::Region,
 ) -> SessionTasks {
     let (control_tx, mut control_rx) = mpsc::unbounded_channel::<ControlMessage>();
     let closed = Arc::new(AtomicBool::new(false));
@@ -623,7 +655,7 @@ fn spawn_session_tasks(
             match msg {
                 ControlMessage::SetRegion(r) => {
                     if let Ok(mut g) = region_reader.lock() {
-                        *g = (r.width, r.height);
+                        *g = r;
                     }
                 }
                 ControlMessage::Pong {

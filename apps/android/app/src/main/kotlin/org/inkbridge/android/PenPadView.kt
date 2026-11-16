@@ -119,12 +119,96 @@ class PenPadView(context: Context, private val session: Session) : View(context)
     }
 
     /** Called when the computer maps a different desktop region. */
-    fun onHostRegion(width: UInt, height: UInt) {
-        val aspect = aspectOf(width, height)
-        if (kotlin.math.abs(aspect - hostAspect) < 1e-3f) return
-        hostAspect = aspect
-        layoutArea()
+    fun onHostRegion(x: Int, y: Int, width: UInt, height: UInt) {
+        val r = RectF(x.toFloat(), y.toFloat(), x.toFloat() + width.toFloat(), y.toFloat() + height.toFloat())
+        if (r == region) return
+        region = r
+        hostAspect = aspectOf(width, height)
+        layoutArea() // also resets any view-gesture preview
         clearInk()
+    }
+
+    /** The desktop region currently shown (desktop pixels). */
+    private var region = RectF()
+
+    fun activeArea(): RectF = RectF(area)
+    fun shownRegion(): RectF = RectF(region)
+
+    /**
+     * Zoomable view: while on, two fingers move and zoom the tablet's view
+     * of the desktop instead of scrolling/zooming inside apps.
+     */
+    var viewMode = false
+        set(v) { field = v; endViewGesture(commit = false); endGesture(FingerPhase.CANCEL) }
+
+    /** Live preview while a view gesture runs: the view being selected (desktop px). */
+    var onViewPreview: ((RectF) -> Unit)? = null
+
+    private var viewStart: RectF? = null
+    private var viewDraft: RectF? = null
+    private var viewPidA = -1
+    private var viewPidB = -1
+    private var viewC0x = 0f
+    private var viewC0y = 0f
+    private var viewD0 = 1f
+
+    /** Two-finger pan + pinch of the view: the desktop point under the fingers stays under them. */
+    private fun onViewFingers(ev: MotionEvent): Boolean {
+        val action = ev.actionMasked
+        if (action == MotionEvent.ACTION_CANCEL) { endViewGesture(commit = false); return true }
+        val fingers = (0 until ev.pointerCount).filter {
+            ev.getToolType(it) == MotionEvent.TOOL_TYPE_FINGER &&
+                !((action == MotionEvent.ACTION_POINTER_UP || action == MotionEvent.ACTION_UP) && it == ev.actionIndex)
+        }
+        if (viewStart == null) {
+            if (fingers.size >= 2 && region.width() > 0f) {
+                viewPidA = ev.getPointerId(fingers[0]); viewPidB = ev.getPointerId(fingers[1])
+                viewC0x = (ev.getX(fingers[0]) + ev.getX(fingers[1])) / 2
+                viewC0y = (ev.getY(fingers[0]) + ev.getY(fingers[1])) / 2
+                viewD0 = hypot(ev.getX(fingers[1]) - ev.getX(fingers[0]), ev.getY(fingers[1]) - ev.getY(fingers[0])).coerceAtLeast(1f)
+                viewStart = RectF(region)
+            }
+            return true
+        }
+        val ia = ev.findPointerIndex(viewPidA)
+        val ib = ev.findPointerIndex(viewPidB)
+        if (ia < 0 || ib < 0 || fingers.size < 2 || ia !in fingers || ib !in fingers) { endViewGesture(commit = true); return true }
+        val start = viewStart ?: return true
+        val cx = (ev.getX(ia) + ev.getX(ib)) / 2
+        val cy = (ev.getY(ia) + ev.getY(ib)) / 2
+        val d = hypot(ev.getX(ib) - ev.getX(ia), ev.getY(ib) - ev.getY(ia)).coerceAtLeast(1f)
+        // Spreading the fingers zooms in (smaller view), pinching zooms out.
+        val w = start.width() * viewD0 / d
+        val h = w * start.height() / start.width()
+        // Desktop point that was under the starting centroid…
+        val px = start.left + (viewC0x - area.left) / area.width() * start.width()
+        val py = start.top + (viewC0y - area.top) / area.height() * start.height()
+        // …placed under the current centroid.
+        val left = px - (cx - area.left) / area.width() * w
+        val top = py - (cy - area.top) / area.height() * h
+        val draft = RectF(left, top, left + w, top + h)
+        viewDraft = draft
+        onViewPreview?.invoke(draft)
+        return true
+    }
+
+    private fun endViewGesture(commit: Boolean) {
+        val draft = viewDraft
+        viewStart = null
+        viewDraft = null
+        if (commit && draft != null) {
+            runCatching {
+                session.requestView(draft.left.toInt(), draft.top.toInt(), draft.width().toUInt(), draft.height().toUInt())
+            }
+        } else {
+            layoutArea() // drop the preview
+        }
+    }
+
+    /** Asks for the whole display (the "Fit" button). */
+    fun fitWholeDisplay() {
+        val h = session.host()
+        runCatching { session.requestView(h.displayX, h.displayY, h.displayWidth, h.displayHeight) }
     }
 
     /** The largest area with the region's aspect, centred (letterboxed). */
@@ -179,6 +263,7 @@ class PenPadView(context: Context, private val session: Session) : View(context)
      * A single finger or a resting palm does nothing.
      */
     private fun onFingers(ev: MotionEvent): Boolean {
+        if (viewMode) return onViewFingers(ev)
         val action = ev.actionMasked
         val leaving = if (action == MotionEvent.ACTION_POINTER_UP || action == MotionEvent.ACTION_UP) ev.actionIndex else -1
         val down = (0 until ev.pointerCount).filter {
