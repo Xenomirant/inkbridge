@@ -5,6 +5,7 @@
 //! through a channel, so async scheduling never delays injection.
 
 pub mod clock;
+pub mod pairing_page;
 pub mod pen_thread;
 pub mod platform;
 pub mod server;

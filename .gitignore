@@ -16,3 +16,4 @@ apps/ios/build/
 # local test artefacts
 host-run.log
 run-fake-tablet.cmd
+apps/android/.kotlin/

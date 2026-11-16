@@ -1,0 +1,35 @@
+[package]
+name = "ib-ffi"
+description = "Inkbridge client core exposed to Kotlin/Swift through UniFFI."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[lib]
+crate-type = ["cdylib", "lib"]
+name = "ib_ffi"
+
+[[bin]]
+# Generates the Kotlin/Swift bindings from the built library:
+# cargo run -p ib-ffi --features bindgen --bin uniffi-bindgen -- generate --library <lib> --language kotlin --out-dir <dir>
+name = "uniffi-bindgen"
+path = "src/bin/uniffi-bindgen.rs"
+required-features = ["bindgen"]
+
+[features]
+bindgen = ["uniffi/cli"]
+
+[dependencies]
+ib-protocol.workspace = true
+ib-transport.workspace = true
+ib-session.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+uniffi.workspace = true
+
+[lints]
+workspace = true

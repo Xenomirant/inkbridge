@@ -50,7 +50,7 @@ fn parse_args() -> anyhow::Result<Args> {
     Ok(args)
 }
 
-fn print_offer(offer: &PairingOffer) {
+fn show_offer(offer: &PairingOffer, dir: &std::path::Path, host_name: &str) {
     let uri = offer.to_uri();
     match qrcode::QrCode::new(uri.as_bytes()) {
         Ok(code) => {
@@ -63,6 +63,19 @@ fn print_offer(offer: &PairingOffer) {
         Err(e) => tracing::warn!("could not render QR code: {e}"),
     }
     println!("Pairing code: {uri}\n");
+    // A real image scans far more reliably than terminal characters.
+    match ib_host::pairing_page::write(dir, offer, host_name) {
+        Ok(page) => {
+            if let Err(e) = ib_host::pairing_page::open(&page) {
+                tracing::warn!("could not open {}: {e}", page.display());
+            }
+            println!(
+                "The QR code is also open in your browser: {}",
+                page.display()
+            );
+        }
+        Err(e) => tracing::warn!("could not write the pairing page: {e}"),
+    }
 }
 
 #[tokio::main]
@@ -103,6 +116,7 @@ async fn main() -> anyhow::Result<()> {
     let host_name = std::env::var("COMPUTERNAME")
         .or_else(|_| std::env::var("HOSTNAME"))
         .unwrap_or_else(|_| "Inkbridge host".into());
+    let host_label = host_name.clone();
     let bind = SocketAddr::new(Ipv6Addr::UNSPECIFIED.into(), args.port);
     let config = HostConfig {
         host_name,
@@ -114,7 +128,7 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!(addr = %host.local_addr()?, ?region, config = %dir.display(), "host listening");
 
     if args.force_pairing || host.paired_count().await == 0 {
-        print_offer(&host.open_pairing().await?);
+        show_offer(&host.open_pairing().await?, &dir, &host_label);
     } else {
         println!("Tablets already paired; run with --pair to pair another one.");
     }

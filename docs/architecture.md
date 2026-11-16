@@ -106,6 +106,7 @@ inkbridge/
 - Pen capture from `MotionEvent` (`TOOL_TYPE_STYLUS/ERASER`, `AXIS_PRESSURE`, `AXIS_TILT`, `AXIS_ORIENTATION`, hover events, `getHistorical*` for full sample rate); `requestUnbufferedDispatch` to avoid 60 Hz batching.
 - **Local ink prediction:** draw the stroke immediately on a transparent overlay (Android `androidx.input` motion prediction + front-buffered rendering), and fade it once the real desktop frame containing that ink arrives. This hides network + encode latency.
 - Palm rejection: only stylus pointers are forwarded in pen mode; finger gestures map to scroll/zoom of the view (configurable).
+- Minimum Android 11 (API 30), so low-latency decode and front-buffered rendering are always available.
 - No root, no adb, distributed as a normal APK (store + direct download, as Google Play isn't available on China-market tablets).
 
 ### 5.5 Pen injection (`ib-inject`)
