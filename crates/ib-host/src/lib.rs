@@ -1,0 +1,13 @@
+//! Inkbridge desktop host.
+//!
+//! Composition root: wires transport, session and pen injection together.
+//! The pen path runs on its own high-priority OS thread ([`pen_thread`]), fed
+//! through a channel, so async scheduling never delays injection.
+
+pub mod clock;
+pub mod pen_thread;
+pub mod platform;
+pub mod server;
+pub mod storage;
+
+pub use server::{Host, HostConfig};

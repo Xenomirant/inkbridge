@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/*"]
+members = ["crates/*", "tools/*"]
 
 [workspace.package]
 version = "0.1.0"
@@ -17,6 +17,9 @@ ib-protocol = { path = "crates/ib-protocol" }
 ib-geometry = { path = "crates/ib-geometry" }
 ib-capture = { path = "crates/ib-capture" }
 ib-transport = { path = "crates/ib-transport" }
+ib-session = { path = "crates/ib-session" }
+ib-inject = { path = "crates/ib-inject" }
+ib-clock = { path = "crates/ib-clock" }
 
 # External crates (versions pinned centrally)
 serde = { version = "1", features = ["derive"] }
@@ -32,6 +35,12 @@ rustls = { version = "0.23", default-features = false, features = ["std", "ring"
 rcgen = { version = "0.14", default-features = false, features = ["crypto", "ring"] }
 ring = "0.17"
 subtle = "2.6"
+windows = "0.62"
+anyhow = "1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+directories = "6"
+qrcode = { version = "0.14", default-features = false }
+if-addrs = "0.15"
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"

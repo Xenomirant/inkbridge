@@ -8,8 +8,30 @@
 //!
 //! [`FakePenSink`] records events for tests and the CI loopback pipeline.
 
+mod tracker;
+#[cfg(windows)]
+mod windows;
+
+pub use tracker::{PenTracker, Step};
+#[cfg(windows)]
+pub use windows::WindowsPenSink;
+
 use ib_geometry::DesktopPoint;
 use ib_protocol::{PenFeatures, PenSample};
+
+/// The best pen backend available on this OS.
+pub fn platform_sink() -> Result<Box<dyn PenSink>, InjectError> {
+    #[cfg(windows)]
+    {
+        Ok(Box::new(WindowsPenSink::new()?))
+    }
+    #[cfg(not(windows))]
+    {
+        Err(InjectError::Unavailable(
+            "no pen backend for this OS yet (Linux in M3, macOS in M4)".into(),
+        ))
+    }
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum InjectError {
