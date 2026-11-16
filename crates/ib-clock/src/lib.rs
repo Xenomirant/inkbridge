@@ -7,6 +7,10 @@
 //! exchange has the least queueing asymmetry, so its offset is the most
 //! accurate). [`LatencyStats`] keeps rolling percentiles per pipeline stage.
 
+mod rate;
+
+pub use rate::{BitrateController, RateConfig};
+
 use std::collections::VecDeque;
 use std::sync::OnceLock;
 use std::time::Instant;

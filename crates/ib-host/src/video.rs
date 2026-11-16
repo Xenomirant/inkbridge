@@ -29,6 +29,8 @@ pub type SourceFactory = Box<dyn FnOnce() -> Box<dyn ScreenSource> + Send>;
 pub enum VideoCommand {
     SetRegion(Region),
     Keyframe,
+    /// Bitrate the tablet asks for (adaptive control), kbit/s.
+    Bitrate(u32),
     Stop,
 }
 
@@ -101,6 +103,10 @@ impl VideoPipeline {
 
     pub fn request_keyframe(&self) {
         let _ = self.commands.send(VideoCommand::Keyframe);
+    }
+
+    pub fn set_bitrate(&self, kbps: u32) {
+        let _ = self.commands.send(VideoCommand::Bitrate(kbps));
     }
 }
 
@@ -181,6 +187,51 @@ fn make_encoder(
     }
 }
 
+/// Host side of adaptive bitrate: the tablet's request, capped by a local
+/// safety limit that drops at once when frames must be skipped (the queue to
+/// the network is full) and recovers slowly.
+#[derive(Debug)]
+struct Rate {
+    requested: u32,
+    local_cap: u32,
+    last_change: std::time::Instant,
+    applied: u32,
+}
+
+impl Rate {
+    const MIN_KBPS: u32 = 1_500;
+
+    fn new() -> Self {
+        Self {
+            requested: u32::MAX,
+            local_cap: u32::MAX,
+            last_change: std::time::Instant::now(),
+            applied: u32::MAX,
+        }
+    }
+
+    fn on_skip(&mut self, current: u32) {
+        self.local_cap = (current.min(self.local_cap) * 4 / 5).max(Self::MIN_KBPS);
+        self.last_change = std::time::Instant::now();
+    }
+
+    /// Lets the local cap recover by 5% every 2 s without skips.
+    fn tick(&mut self) {
+        if self.local_cap != u32::MAX && self.last_change.elapsed() >= Duration::from_secs(2) {
+            self.local_cap = self.local_cap.saturating_add(self.local_cap / 20);
+            self.last_change = std::time::Instant::now();
+        }
+    }
+
+    /// The bitrate to use for an encoder whose own maximum is `encoder_max`.
+    fn target(&self, encoder_max: u32) -> u32 {
+        self.requested
+            .min(self.local_cap)
+            .min(encoder_max)
+            .max(Self::MIN_KBPS.min(encoder_max))
+    }
+}
+
 /// Consecutive hardware failures before falling back to software for good.
 const HARDWARE_RETRIES: u32 = 3;
 /// Bitrate ceiling for the hardware path (kbit/s).
@@ -188,99 +239,175 @@ const HARDWARE_RETRIES: u32 = 3;
 const HARDWARE_MAX_KBPS: u32 = 25_000;
 
 fn run(
-    mut source: Box<dyn ScreenSource>,
-    mut fallback: Option<SourceFactory>,
-    mut region: Region,
+    source: Box<dyn ScreenSource>,
+    fallback: Option<SourceFactory>,
+    region: Region,
     client_max: (u32, u32),
     commands: &Receiver<VideoCommand>,
     out: &tokio::sync::mpsc::Sender<VideoChunk>,
 ) -> anyhow::Result<()> {
-    source.start(region)?;
-    let mut encoder: Option<Box<dyn VideoEncoder>> = None;
-    let mut failures = 0u32;
-    let mut force_key = true;
-    let mut frame_no = 0u64;
-    let mut last: Option<Frame> = None;
+    let mut p = Pipeline::new(source, fallback, region, client_max)?;
+    loop {
+        if p.apply_commands(commands)? == Flow::Stop {
+            return Ok(());
+        }
+        let Some(frame) = p.next_input()? else {
+            continue;
+        };
+        if !p.ensure_encoder(&frame)? {
+            continue;
+        }
+        if p.encode_and_send(frame, out)? == Flow::Stop {
+            return Ok(());
+        }
+    }
+}
 
-    // Switches to CPU capture + software encoding (no usable hardware path).
-    let mut fall_back = |source: &mut Box<dyn ScreenSource>,
-                         region: Region,
-                         why: &anyhow::Error|
-     -> anyhow::Result<()> {
-        let make = fallback
+#[derive(Debug, PartialEq, Eq)]
+enum Flow {
+    Continue,
+    Stop,
+}
+
+/// State of one running pipeline (owned by the video thread).
+struct Pipeline {
+    source: Box<dyn ScreenSource>,
+    fallback: Option<SourceFactory>,
+    region: Region,
+    client_max: (u32, u32),
+    encoder: Option<Box<dyn VideoEncoder>>,
+    /// The bitrate the current encoder started with (its maximum).
+    encoder_max: u32,
+    rate: Rate,
+    failures: u32,
+    force_key: bool,
+    frame_no: u64,
+    /// Last captured frame, re-encoded when a keyframe is needed on a static screen.
+    last: Option<Frame>,
+}
+
+impl Pipeline {
+    fn new(
+        mut source: Box<dyn ScreenSource>,
+        fallback: Option<SourceFactory>,
+        region: Region,
+        client_max: (u32, u32),
+    ) -> anyhow::Result<Self> {
+        source.start(region)?;
+        Ok(Self {
+            source,
+            fallback,
+            region,
+            client_max,
+            encoder: None,
+            encoder_max: 0,
+            rate: Rate::new(),
+            failures: 0,
+            force_key: true,
+            frame_no: 0,
+            last: None,
+        })
+    }
+
+    fn apply_commands(&mut self, commands: &Receiver<VideoCommand>) -> anyhow::Result<Flow> {
+        loop {
+            match commands.try_recv() {
+                Ok(VideoCommand::SetRegion(r)) if r != self.region => {
+                    self.region = r;
+                    self.source.start(r)?;
+                    self.encoder = None; // rebuilt for the new size on the next frame
+                    self.force_key = true;
+                    self.last = None;
+                }
+                Ok(VideoCommand::SetRegion(_)) => {}
+                Ok(VideoCommand::Keyframe) => self.force_key = true,
+                Ok(VideoCommand::Bitrate(kbps)) => self.rate.requested = kbps,
+                Ok(VideoCommand::Stop) | Err(TryRecvError::Disconnected) => return Ok(Flow::Stop),
+                Err(TryRecvError::Empty) => return Ok(Flow::Continue),
+            }
+        }
+    }
+
+    /// The next frame to encode: a fresh capture, or the last one again when
+    /// a keyframe is due on a static screen.
+    fn next_input(&mut self) -> anyhow::Result<Option<Frame>> {
+        Ok(match self.source.next_frame(Duration::from_millis(50))? {
+            Some(f) => Some(f),
+            None if self.force_key => self.last.clone(),
+            None => None,
+        })
+    }
+
+    /// Makes sure an encoder exists for `frame`; `false` means "skip this
+    /// frame" (e.g. after switching to the software path).
+    fn ensure_encoder(&mut self, frame: &Frame) -> anyhow::Result<bool> {
+        if self.encoder.is_some() {
+            return Ok(true);
+        }
+        match make_encoder(frame, self.region, self.client_max) {
+            Ok(e) => {
+                self.encoder_max = e.config().bitrate_kbps;
+                self.rate.applied = self.encoder_max;
+                self.encoder = Some(e);
+                self.force_key = true;
+                Ok(true)
+            }
+            Err(e) => {
+                self.fall_back(&e)?;
+                Ok(false)
+            }
+        }
+    }
+
+    /// Switches to CPU capture + software encoding (no usable hardware path).
+    fn fall_back(&mut self, why: &anyhow::Error) -> anyhow::Result<()> {
+        let make = self
+            .fallback
             .take()
             .ok_or_else(|| anyhow::anyhow!("video encoding failed: {why:#}"))?;
         tracing::warn!("hardware video path unavailable ({why:#}); using the software encoder");
-        *source = make();
-        source.start(region)?;
+        self.source = make();
+        self.source.start(self.region)?;
+        self.encoder = None;
+        self.last = None;
         Ok(())
-    };
+    }
 
-    loop {
-        loop {
-            match commands.try_recv() {
-                Ok(VideoCommand::SetRegion(r)) if r != region => {
-                    region = r;
-                    source.start(region)?;
-                    encoder = None; // rebuilt for the new size on the next frame
-                    force_key = true;
-                    last = None;
-                }
-                Ok(VideoCommand::SetRegion(_)) => {}
-                // A keyframe needs a picture even if the screen is static:
-                // re-encode the last captured frame.
-                Ok(VideoCommand::Keyframe) => force_key = true,
-                Ok(VideoCommand::Stop) | Err(TryRecvError::Disconnected) => return Ok(()),
-                Err(TryRecvError::Empty) => break,
-            }
+    fn encode_and_send(
+        &mut self,
+        frame: Frame,
+        out: &tokio::sync::mpsc::Sender<VideoChunk>,
+    ) -> anyhow::Result<Flow> {
+        let enc = self.encoder.as_mut().expect("ensure_encoder ran");
+        self.rate.tick();
+        let target = self.rate.target(self.encoder_max);
+        if target != self.rate.applied {
+            enc.set_bitrate(target);
+            self.rate.applied = target;
+            tracing::debug!(kbps = target, "video bitrate");
         }
-
-        let frame = match source.next_frame(Duration::from_millis(50))? {
-            Some(f) => f,
-            None if force_key => match last.clone() {
-                Some(f) => f,
-                None => continue,
-            },
-            None => continue,
-        };
-
-        if encoder.is_none() {
-            match make_encoder(&frame, region, client_max) {
-                Ok(e) => {
-                    encoder = Some(e);
-                    force_key = true;
-                }
-                Err(e) => {
-                    fall_back(&mut source, region, &e)?;
-                    last = None;
-                    continue;
-                }
-            }
-        }
-        let enc = encoder.as_mut().expect("created above");
         let cfg = enc.config();
         let input = scale_to(&frame, cfg.width, cfg.height);
-        let encoded = match enc.encode(&input, force_key) {
+        let encoded = match enc.encode(&input, self.force_key) {
             Ok(e) => {
-                failures = 0;
+                self.failures = 0;
                 e
             }
             Err(e) => {
                 // Rebuild the encoder; after repeated failures, use software.
-                failures += 1;
-                tracing::warn!(failures, "video encode failed: {e}");
-                encoder = None;
-                force_key = true;
-                if failures >= HARDWARE_RETRIES {
-                    fall_back(&mut source, region, &anyhow::Error::new(e))?;
-                    last = None;
+                self.failures += 1;
+                tracing::warn!(failures = self.failures, "video encode failed: {e}");
+                self.encoder = None;
+                self.force_key = true;
+                if self.failures >= HARDWARE_RETRIES {
+                    self.fall_back(&anyhow::Error::new(e))?;
                 }
-                continue;
+                return Ok(Flow::Continue);
             }
         };
-        frame_no += 1;
+        self.frame_no += 1;
         let chunk = VideoChunk {
-            frame_no,
+            frame_no: self.frame_no,
             kind: encoded.kind,
             width: cfg.width,
             height: cfg.height,
@@ -289,12 +416,17 @@ fn run(
             payload: encoded.data,
         };
         match out.try_send(chunk) {
-            Ok(()) => force_key = false,
-            // Network behind: skip, and resync with a keyframe next time.
-            Err(TrySendError::Full(_)) => force_key = true,
-            Err(TrySendError::Closed(_)) => return Ok(()),
+            Ok(()) => self.force_key = false,
+            // Network behind: skip, lower the bitrate, and resync with a
+            // keyframe next time.
+            Err(TrySendError::Full(_)) => {
+                self.force_key = true;
+                self.rate.on_skip(self.rate.applied);
+            }
+            Err(TrySendError::Closed(_)) => return Ok(Flow::Stop),
         }
-        last = Some(frame);
+        self.last = Some(frame);
+        Ok(Flow::Continue)
     }
 }
 
@@ -354,6 +486,22 @@ mod tests {
         }
         assert!(got_key, "keyframe request must produce a keyframe");
         drop(p);
+    }
+
+    #[test]
+    fn rate_follows_tablet_and_backs_off_on_skips() {
+        let mut r = Rate::new();
+        assert_eq!(r.target(20_000), 20_000); // no request yet: encoder maximum
+        r.requested = 8_000;
+        assert_eq!(r.target(20_000), 8_000);
+        r.on_skip(8_000);
+        assert_eq!(r.target(20_000), 6_400); // immediate local cut
+        r.requested = 30_000;
+        assert_eq!(r.target(20_000), 6_400, "local cap still applies");
+        for _ in 0..10 {
+            r.on_skip(Rate::MIN_KBPS);
+        }
+        assert_eq!(r.target(20_000), Rate::MIN_KBPS);
     }
 
     #[test]

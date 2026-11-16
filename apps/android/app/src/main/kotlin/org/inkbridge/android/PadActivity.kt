@@ -33,8 +33,8 @@ class PadActivity : ComponentActivity() {
             pad.onHostRegion(host.regionWidth, host.regionHeight)
             info.text = if (s.hasVideo()) {
                 val l = s.latency()
-                "%s · screen %.0f ms (p95 %.0f) · encode %.0f · net %.0f · %.0f fps".format(
-                    host.name, l.totalMs, l.totalP95Ms, l.encodeMs, l.networkMs, l.fps,
+                "%s · screen %.0f ms (p95 %.0f) · encode %.0f · net %.0f · %.0f fps · %.1f Mbit/s".format(
+                    host.name, l.totalMs, l.totalP95Ms, l.encodeMs, l.networkMs, l.fps, l.bitrateMbps,
                 )
             } else {
                 "${host.name} · ${"%.1f".format(s.rttUs().toDouble() / 1000.0)} ms"

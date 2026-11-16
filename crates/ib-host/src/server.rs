@@ -257,6 +257,11 @@ impl Host {
                         v.request_keyframe();
                     }
                 }
+                ControlMessage::BitrateHint { kbps } => {
+                    if let Some(v) = &session.video {
+                        v.set_bitrate(kbps);
+                    }
+                }
                 ControlMessage::Goodbye => return Ok(()),
                 other => tracing::debug!(?other, "ignored control message"),
             }

@@ -91,11 +91,14 @@ pub struct LatencyReport {
     pub fps: f32,
     /// Clock-sync round trip (lowest recent).
     pub rtt_ms: f32,
+    /// Bitrate the tablet currently asks for (adaptive), Mbit/s.
+    pub bitrate_mbps: f32,
 }
 
 /// Clock sync and per-stage latency statistics for one session.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct Telemetry {
+    rate: ib_clock::BitrateController,
     sync: ib_clock::ClockSync,
     encode: ib_clock::LatencyStats,
     network: ib_clock::LatencyStats,
@@ -103,14 +106,29 @@ struct Telemetry {
     presented: std::collections::VecDeque<u64>,
 }
 
+impl Default for Telemetry {
+    fn default() -> Self {
+        Self {
+            rate: ib_clock::BitrateController::new(ib_clock::RateConfig::default()),
+            sync: ib_clock::ClockSync::default(),
+            encode: ib_clock::LatencyStats::default(),
+            network: ib_clock::LatencyStats::default(),
+            total: ib_clock::LatencyStats::default(),
+            presented: std::collections::VecDeque::new(),
+        }
+    }
+}
+
 impl Telemetry {
-    fn on_video(&mut self, chunk: &VideoChunk, received_local_us: u64) {
+    /// Records a received frame; returns a new bitrate target if the
+    /// adaptive controller changed it.
+    fn on_video(&mut self, chunk: &VideoChunk, received_local_us: u64) -> Option<u32> {
         self.encode
             .record_us(chunk.encode_done_t_us.saturating_sub(chunk.capture_t_us));
-        if let Some(sent) = self.sync.remote_to_local(chunk.encode_done_t_us) {
-            self.network
-                .record_us(received_local_us.saturating_sub(sent));
-        }
+        let sent = self.sync.remote_to_local(chunk.encode_done_t_us)?;
+        let delay = received_local_us.saturating_sub(sent);
+        self.network.record_us(delay);
+        self.rate.on_delay(received_local_us, delay)
     }
 
     fn on_presented(&mut self, capture_host_us: u64, now_local_us: u64) {
@@ -138,6 +156,7 @@ impl Telemetry {
             total_p95_ms: ms(&self.total, 95.0),
             fps: self.presented.len() as f32,
             rtt_ms: self.sync.min_rtt_us().map_or(0.0, |us| us as f32 / 1000.0),
+            bitrate_mbps: self.rate.target_kbps() as f32 / 1000.0,
         }
     }
 }
@@ -371,9 +390,14 @@ impl Session {
             &connection,
             (hello.region.width, hello.region.height),
         );
-        let video = hello
-            .codec
-            .map(|_| spawn_video_receiver(&runtime, &connection, tasks.telemetry.clone()));
+        let video = hello.codec.map(|_| {
+            spawn_video_receiver(
+                &runtime,
+                &connection,
+                tasks.telemetry.clone(),
+                tasks.control_tx.clone(),
+            )
+        });
 
         let host = HostInfo {
             name: hello.host_name,
@@ -636,6 +660,7 @@ fn spawn_video_receiver(
     runtime: &tokio::runtime::Runtime,
     connection: &Connection,
     telemetry: Arc<Mutex<Telemetry>>,
+    control_tx: mpsc::UnboundedSender<ControlMessage>,
 ) -> Mutex<mpsc::Receiver<VideoChunk>> {
     let (tx, rx) = mpsc::channel::<VideoChunk>(8);
     let conn = connection.clone();
@@ -644,8 +669,12 @@ fn spawn_video_receiver(
             return;
         };
         while let Ok(chunk) = stream.recv().await {
-            if let Ok(mut t) = telemetry.lock() {
-                t.on_video(&chunk, ib_clock::now_us());
+            let hint = telemetry
+                .lock()
+                .ok()
+                .and_then(|mut t| t.on_video(&chunk, ib_clock::now_us()));
+            if let Some(kbps) = hint {
+                let _ = control_tx.send(ControlMessage::BitrateHint { kbps });
             }
             if tx.send(chunk).await.is_err() {
                 break;
