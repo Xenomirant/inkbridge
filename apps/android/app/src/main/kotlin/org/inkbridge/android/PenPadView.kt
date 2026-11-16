@@ -8,6 +8,8 @@ import android.graphics.Paint
 import android.graphics.RectF
 import android.view.MotionEvent
 import android.view.View
+import kotlin.math.abs
+import kotlin.math.hypot
 import org.inkbridge.core.Finger
 import org.inkbridge.core.FingerPhase
 import org.inkbridge.core.PenContact
@@ -25,6 +27,11 @@ import org.inkbridge.core.StylusSample
  */
 class PenPadView(context: Context, private val session: Session) : View(context) {
 
+    private companion object {
+        /** Movement before a two-finger gesture is classified (libinput uses a few mm). */
+        const val GESTURE_SLOP_MM = 4f
+    }
+
     private val hostAspect: Float = session.host().let {
         if (it.regionHeight == 0u) 16f / 9f else it.regionWidth.toFloat() / it.regionHeight.toFloat()
     }
@@ -38,9 +45,19 @@ class PenPadView(context: Context, private val session: Session) : View(context)
     private var lastX = Float.NaN
     private var lastY = Float.NaN
 
-    /** Active multi-finger gesture: Android pointer id → wire finger id. */
-    private val gesture = LinkedHashMap<Int, Int>()
+    /**
+     * Two-finger gesture, recognised like touchpad drivers do (libinput):
+     * nothing is sent until the motion is unambiguous (> [GESTURE_SLOP_MM]),
+     * then the gesture is locked as PAN or ZOOM until the fingers lift.
+     */
+    private enum class Mode { NONE, UNDECIDED, PAN, ZOOM }
+    private var mode = Mode.NONE
+    private var pidA = -1
+    private var pidB = -1
+    private var startAx = 0f; private var startAy = 0f
+    private var startBx = 0f; private var startBy = 0f
     private var lastFrame: List<Finger> = emptyList()
+    private val pxPerMm = resources.displayMetrics.xdpi / 25.4f
 
     /** Last state sent reliably; a change triggers a transition message. */
     private var lastContact: PenContact? = null
@@ -96,9 +113,10 @@ class PenPadView(context: Context, private val session: Session) : View(context)
     }
 
     /**
-     * Fingers. Two or more fingers form a gesture that the computer receives
-     * as native touch (pan/scroll with inertia, pinch-zoom). A single finger
-     * or a resting palm does nothing, so writing is never disturbed.
+     * Fingers. Two fingers form a gesture the computer receives as native
+     * touch: a PAN is sent as two fingers at a fixed distance (so the OS can
+     * never mistake it for zooming), a ZOOM as the real finger positions.
+     * A single finger or a resting palm does nothing.
      */
     private fun onFingers(ev: MotionEvent): Boolean {
         val action = ev.actionMasked
@@ -106,53 +124,55 @@ class PenPadView(context: Context, private val session: Session) : View(context)
         val down = (0 until ev.pointerCount).filter {
             ev.getToolType(it) == MotionEvent.TOOL_TYPE_FINGER && it != leaving
         }
-        if (gesture.isEmpty()) {
+        if (mode == Mode.NONE) {
             if (down.size >= 2 && action != MotionEvent.ACTION_CANCEL) {
-                send(down.map { finger(ev, it, assignId(ev.getPointerId(it)), FingerPhase.DOWN) })
+                pidA = ev.getPointerId(down[0]); pidB = ev.getPointerId(down[1])
+                startAx = ev.getX(down[0]); startAy = ev.getY(down[0])
+                startBx = ev.getX(down[1]); startBy = ev.getY(down[1])
+                mode = Mode.UNDECIDED
             }
             return true
         }
-        when {
-            action == MotionEvent.ACTION_CANCEL -> endGesture(ev, FingerPhase.CANCEL)
-            down.size < 2 -> endGesture(ev, FingerPhase.UP)
-            else -> {
-                val frame = ArrayList<Finger>()
-                for (i in down) {
-                    val pid = ev.getPointerId(i)
-                    val known = gesture[pid]
-                    frame += if (known != null) finger(ev, i, known, FingerPhase.MOVE)
-                    else finger(ev, i, assignId(pid), FingerPhase.DOWN)
-                }
-                if (leaving >= 0) gesture.remove(ev.getPointerId(leaving))?.let { id ->
-                    frame += finger(ev, leaving, id, FingerPhase.UP)
-                }
-                send(frame)
-            }
+        val ia = ev.findPointerIndex(pidA)
+        val ib = ev.findPointerIndex(pidB)
+        val lost = ia < 0 || ib < 0 || ia == leaving || ib == leaving
+        if (action == MotionEvent.ACTION_CANCEL) { endGesture(FingerPhase.CANCEL); return true }
+        if (lost) { endGesture(FingerPhase.UP); return true }
+
+        val ax = ev.getX(ia); val ay = ev.getY(ia); val bx = ev.getX(ib); val by = ev.getY(ib)
+        if (mode == Mode.UNDECIDED) {
+            val translation = hypot((ax + bx - startAx - startBx) / 2, (ay + by - startAy - startBy) / 2)
+            val spreadChange = abs(hypot(bx - ax, by - ay) - hypot(startBx - startAx, startBy - startAy))
+            if (maxOf(translation, spreadChange) < GESTURE_SLOP_MM * pxPerMm) return true
+            mode = if (spreadChange > translation) Mode.ZOOM else Mode.PAN
+            send(listOf(wire(0, startAx, startAy, FingerPhase.DOWN), wire(1, startBx, startBy, FingerPhase.DOWN)))
         }
+        val frame = if (mode == Mode.PAN) {
+            // Keep the start separation: only the centroid moves.
+            val dcx = (ax + bx - startAx - startBx) / 2
+            val dcy = (ay + by - startAy - startBy) / 2
+            listOf(wire(0, startAx + dcx, startAy + dcy, FingerPhase.MOVE), wire(1, startBx + dcx, startBy + dcy, FingerPhase.MOVE))
+        } else {
+            listOf(wire(0, ax, ay, FingerPhase.MOVE), wire(1, bx, by, FingerPhase.MOVE))
+        }
+        send(frame)
         return true
     }
 
-    /** Lifts (or cancels) every finger of the gesture at its last position. */
-    private fun endGesture(ev: MotionEvent, phase: FingerPhase) {
-        val frame = gesture.mapNotNull { (pid, id) ->
-            val i = ev.findPointerIndex(pid)
-            if (i >= 0) finger(ev, i, id, phase) else null
-        }
-        gesture.clear()
-        send(frame)
+    /** Lifts (or cancels) both fingers where they were last sent. */
+    private fun endGesture(phase: FingerPhase) {
+        if (mode == Mode.PAN || mode == Mode.ZOOM) send(lastFrame.map { it.copy(phase = phase) })
+        mode = Mode.NONE
         lastFrame = emptyList()
     }
 
-    private fun assignId(pointerId: Int): Int {
-        val id = (0 until 5).first { it !in gesture.values }
-        gesture[pointerId] = id
-        return id
-    }
+    /** Cancels an active gesture (no tap or click), e.g. when the pen touches down. */
+    private fun cancelGesture() = endGesture(FingerPhase.CANCEL)
 
-    private fun finger(ev: MotionEvent, i: Int, id: Int, phase: FingerPhase) = Finger(
+    private fun wire(id: Int, x: Float, y: Float, phase: FingerPhase) = Finger(
         id = id.toUByte(),
-        x = ((ev.getX(i) - area.left) / area.width()).coerceIn(0f, 1f),
-        y = ((ev.getY(i) - area.top) / area.height()).coerceIn(0f, 1f),
+        x = ((x - area.left) / area.width()).coerceIn(0f, 1f),
+        y = ((y - area.top) / area.height()).coerceIn(0f, 1f),
         phase = phase,
     )
 
@@ -160,14 +180,6 @@ class PenPadView(context: Context, private val session: Session) : View(context)
         if (frame.isEmpty() || area.width() <= 0f) return
         runCatching { session.sendTouch(frame) }
         lastFrame = frame.filter { it.phase == FingerPhase.DOWN || it.phase == FingerPhase.MOVE }
-    }
-
-    /** Cancels an active gesture at the fingers' last positions (no tap or click). */
-    private fun cancelGesture() {
-        if (gesture.isEmpty()) return
-        gesture.clear()
-        send(lastFrame.map { it.copy(phase = FingerPhase.CANCEL) })
-        lastFrame = emptyList()
     }
 
     override fun onHoverEvent(ev: MotionEvent): Boolean {
