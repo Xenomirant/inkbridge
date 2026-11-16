@@ -22,7 +22,10 @@ import androidx.graphics.lowlatency.CanvasFrontBufferedRenderer
  */
 class InkLayer(context: Context) {
 
-    /** One straight piece of a stroke, in view pixels. */
+    /**
+     * One straight piece of a stroke, in view pixels. `erase` clears instead
+     * of inking (the pen's eraser, and removal of an outdated prediction).
+     */
     data class Segment(val x0: Float, val y0: Float, val x1: Float, val y1: Float, val width: Float, val erase: Boolean)
 
     val view = SurfaceView(context).apply {

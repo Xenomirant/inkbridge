@@ -8,6 +8,7 @@ import android.graphics.Paint
 import android.graphics.RectF
 import android.view.MotionEvent
 import android.view.View
+import androidx.input.motionprediction.MotionEventPredictor
 import kotlin.math.abs
 import kotlin.math.hypot
 import org.inkbridge.core.Finger
@@ -33,6 +34,9 @@ class PenPadView(context: Context, private val session: Session) : View(context)
 
         /** Local ink stays this long after a stroke, covering the round trip. */
         const val INK_FADE_MS = 700L
+
+        /** Longest predicted extension drawn ahead of the pen tip. */
+        const val MAX_PREDICTION_MM = 3f
     }
 
     /** Aspect of the desktop region currently mapped to this tablet. */
@@ -92,6 +96,11 @@ class PenPadView(context: Context, private val session: Session) : View(context)
 
     /** Front-buffered ink over the video (video mode only). */
     var inkLayer: InkLayer? = null
+
+    /** Predicts where the pen tip will be next, to draw slightly ahead of it. */
+    private val predictor: MotionEventPredictor by lazy { MotionEventPredictor.newInstance(this) }
+    /** The prediction currently on screen, erased before the next one is drawn. */
+    private var shownPrediction: InkLayer.Segment? = null
 
     fun clearInk() {
         ink?.eraseColor(Color.TRANSPARENT); invalidate()
@@ -153,7 +162,9 @@ class PenPadView(context: Context, private val session: Session) : View(context)
         }
         val samples = StylusMapper.samples(ev, i, area, contact)
         emit(samples)
+        if (inkLayer != null) predictor.record(ev)
         drawLocal(ev, i, contact)
+        drawPrediction(ev, i, contact)
         if (videoMode && contact != PenContact.CONTACT) postDelayed(fadeInk, INK_FADE_MS)
         return true
     }
@@ -254,6 +265,36 @@ class PenPadView(context: Context, private val session: Session) : View(context)
 
     private fun lastSampleAs(contact: PenContact): StylusSample? =
         lastSample?.copy(contact = contact, pressure = 0f, tUs = lastSample!!.tUs + 1u)
+
+    /**
+     * Draws a short predicted extension beyond the last real point (video
+     * mode only). The previous prediction is erased first; the real segment
+     * drawn just before repairs any ink the erasing touched.
+     */
+    private fun drawPrediction(ev: MotionEvent, i: Int, contact: PenContact) {
+        val front = inkLayer ?: return
+        shownPrediction?.let { front.draw(it.copy(width = it.width + 2f, erase = true)) }
+        shownPrediction = null
+        if (contact != PenContact.CONTACT || lastX.isNaN() || ev.getToolType(i) == MotionEvent.TOOL_TYPE_ERASER) return
+        val predicted = predictor.predict() ?: return
+        try {
+            val pi = predicted.findPointerIndex(ev.getPointerId(i))
+            if (pi < 0) return
+            var dx = predicted.getX(pi) - lastX
+            var dy = predicted.getY(pi) - lastY
+            val len = kotlin.math.hypot(dx, dy)
+            if (len < 0.5f) return
+            // Cap the guess: a sudden turn must never fling ink away.
+            val max = MAX_PREDICTION_MM * resources.displayMetrics.xdpi / 25.4f
+            if (len > max) { dx *= max / len; dy *= max / len }
+            val w = 1.5f + ev.getPressure(i).coerceIn(0f, 1f) * 9f
+            val seg = InkLayer.Segment(lastX, lastY, lastX + dx, lastY + dy, w, erase = false)
+            front.draw(seg)
+            shownPrediction = seg
+        } finally {
+            predicted.recycle()
+        }
+    }
 
     private fun drawLocal(ev: MotionEvent, i: Int, contact: PenContact) {
         if (contact != PenContact.CONTACT) { lastX = Float.NaN; return }

@@ -6,6 +6,7 @@ camerax = "1.6.2"
 zxing = "3.5.4"
 jna = "5.19.1"
 graphicsCore = "1.0.4"
+motionPrediction = "1.0.1"
 junit = "4.13.2"
 
 [libraries]
@@ -16,6 +17,7 @@ camera-view = { module = "androidx.camera:camera-view", version.ref = "camerax" 
 zxing-core = { module = "com.google.zxing:core", version.ref = "zxing" }
 jna = { module = "net.java.dev.jna:jna", version.ref = "jna" }
 graphics-core = { module = "androidx.graphics:graphics-core", version.ref = "graphicsCore" }
+motion-prediction = { module = "androidx.input:input-motionprediction", version.ref = "motionPrediction" }
 junit = { module = "junit:junit", version.ref = "junit" }
 
 [plugins]

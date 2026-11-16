@@ -117,6 +117,7 @@ dependencies {
     implementation(libs.camera.view)
     implementation(libs.zxing.core)
     implementation(libs.graphics.core)
+    implementation(libs.motion.prediction)
     // UniFFI's Kotlin bindings call into the Rust library through JNA.
     implementation("${libs.jna.get().module}:${libs.jna.get().version}@aar")
     testImplementation(libs.junit)
