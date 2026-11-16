@@ -31,6 +31,9 @@ directories.workspace = true
 qrcode.workspace = true
 if-addrs.workspace = true
 
+[dev-dependencies]
+openh264.workspace = true
+
 [target.'cfg(windows)'.dependencies]
 windows = { workspace = true, features = [
     "Win32_Foundation",

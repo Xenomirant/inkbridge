@@ -8,9 +8,13 @@
 //! B-frames, zero lookahead, no frame queue (one frame in flight),
 //! intra-refresh instead of periodic large keyframes. See ADR-0005.
 
+#[cfg(windows)]
+mod mf;
 mod openh264;
 mod scale;
 
+#[cfg(windows)]
+pub use crate::mf::MfEncoder;
 pub use crate::openh264::OpenH264Encoder;
 pub use scale::{fit_within, scale_bgra};
 

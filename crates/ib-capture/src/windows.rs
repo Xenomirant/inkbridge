@@ -5,13 +5,21 @@
 //! thread; the newest frame waits in a single-slot mailbox, so a slow
 //! consumer always gets the latest picture rather than a backlog.
 //!
-//! M2a copies the cropped region to the CPU for the software encoder; the
-//! hardware path (M2b) will hand the D3D11 texture straight to the encoder.
+//! Two output modes:
+//! - **GPU** (hardware encoder): the region is copied GPU→GPU into one of a
+//!   few textures owned by this backend and handed over as-is (zero-copy);
+//! - **CPU** (software encoder): the region is read back as BGRA bytes.
 
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
 use ib_protocol::Region;
+use windows::Win32::Graphics::Direct3D11::{
+    D3D11_BIND_RENDER_TARGET, D3D11_BIND_SHADER_RESOURCE, D3D11_BOX, D3D11_TEXTURE2D_DESC,
+    D3D11_USAGE_DEFAULT, ID3D11Device, ID3D11DeviceContext, ID3D11Multithread, ID3D11Texture2D,
+};
+use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_SAMPLE_DESC};
+use windows::core::Interface;
 use windows_capture::capture::{CaptureControl, Context, GraphicsCaptureApiHandler};
 use windows_capture::frame::Frame as WgcFrame;
 use windows_capture::graphics_capture_api::InternalCaptureControl;
@@ -21,7 +29,10 @@ use windows_capture::settings::{
     MinimumUpdateIntervalSettings, SecondaryWindowSettings, Settings,
 };
 
-use crate::{CaptureError, Display, Frame, FrameData, ScreenSource};
+use crate::{CaptureError, Display, Frame, FrameData, GpuFrame, ScreenSource};
+
+/// Textures in flight: one being encoded, one waiting, one being written.
+const GPU_POOL: usize = 3;
 
 /// Latest-frame mailbox shared with the capture thread.
 #[derive(Default)]
@@ -34,11 +45,57 @@ struct Flags {
     mailbox: Arc<Mailbox>,
     /// Crop rectangle relative to the monitor: (x0, y0, x1, y1).
     crop: (u32, u32, u32, u32),
+    gpu: bool,
 }
 
 struct Handler {
     flags: Flags,
     scratch: Vec<u8>,
+    device: ID3D11Device,
+    context: ID3D11DeviceContext,
+    pool: Vec<ID3D11Texture2D>,
+    next: usize,
+}
+
+impl Handler {
+    /// Next texture of the pool (allocated on first use, matching `w × h`).
+    fn pool_texture(&mut self, w: u32, h: u32) -> Result<ID3D11Texture2D, String> {
+        if self.pool.first().is_some_and(|t| {
+            let mut d = D3D11_TEXTURE2D_DESC::default();
+            // SAFETY: valid texture, valid out pointer.
+            unsafe { t.GetDesc(&mut d) };
+            d.Width != w || d.Height != h
+        }) {
+            self.pool.clear();
+        }
+        if self.pool.len() < GPU_POOL {
+            let desc = D3D11_TEXTURE2D_DESC {
+                Width: w,
+                Height: h,
+                MipLevels: 1,
+                ArraySize: 1,
+                Format: DXGI_FORMAT_B8G8R8A8_UNORM,
+                SampleDesc: DXGI_SAMPLE_DESC {
+                    Count: 1,
+                    Quality: 0,
+                },
+                Usage: D3D11_USAGE_DEFAULT,
+                // Video-processor input (format conversion) needs these.
+                BindFlags: (D3D11_BIND_RENDER_TARGET.0 | D3D11_BIND_SHADER_RESOURCE.0) as u32,
+                CPUAccessFlags: 0,
+                MiscFlags: 0,
+            };
+            let mut tex = None;
+            // SAFETY: valid descriptor and out pointer.
+            unsafe { self.device.CreateTexture2D(&desc, None, Some(&mut tex)) }
+                .map_err(|e| e.to_string())?;
+            self.pool
+                .push(tex.ok_or("CreateTexture2D returned nothing")?);
+        }
+        let t = self.pool[self.next % self.pool.len()].clone();
+        self.next = self.next.wrapping_add(1);
+        Ok(t)
+    }
 }
 
 impl GraphicsCaptureApiHandler for Handler {
@@ -46,9 +103,18 @@ impl GraphicsCaptureApiHandler for Handler {
     type Error = String;
 
     fn new(ctx: Context<Self::Flags>) -> Result<Self, Self::Error> {
+        // The encoder thread uses this device too: serialise access to it.
+        if let Ok(mt) = ctx.device_context.cast::<ID3D11Multithread>() {
+            // SAFETY: plain COM call on a valid interface.
+            let _ = unsafe { mt.SetMultithreadProtected(true) };
+        }
         Ok(Self {
             flags: ctx.flags,
             scratch: Vec::new(),
+            device: ctx.device,
+            context: ctx.device_context,
+            pool: Vec::new(),
+            next: 0,
         })
     }
 
@@ -60,15 +126,45 @@ impl GraphicsCaptureApiHandler for Handler {
         let capture_t_us = ib_clock::now_us();
         let (x0, y0, x1, y1) = self.flags.crop;
         let (x1, y1) = (x1.min(frame.width()), y1.min(frame.height()));
-        let buffer = frame
-            .buffer_crop(x0, y0, x1, y1)
-            .map_err(|e| e.to_string())?;
-        let pixels = buffer.as_nopadding_buffer(&mut self.scratch).to_vec();
+        let (w, h) = (x1 - x0, y1 - y0);
+        let data = if self.flags.gpu {
+            let dst = self.pool_texture(w, h)?;
+            let region = D3D11_BOX {
+                left: x0,
+                top: y0,
+                front: 0,
+                right: x1,
+                bottom: y1,
+                back: 1,
+            };
+            // SAFETY: both textures live on this device; the box lies inside the source.
+            unsafe {
+                self.context.CopySubresourceRegion(
+                    &dst,
+                    0,
+                    0,
+                    0,
+                    0,
+                    frame.as_raw_texture(),
+                    0,
+                    Some(&region),
+                );
+            }
+            FrameData::Gpu(GpuFrame {
+                texture: dst,
+                device: self.device.clone(),
+            })
+        } else {
+            let buffer = frame
+                .buffer_crop(x0, y0, x1, y1)
+                .map_err(|e| e.to_string())?;
+            FrameData::Cpu(buffer.as_nopadding_buffer(&mut self.scratch).to_vec())
+        };
         let out = Frame {
             capture_t_us,
-            width: x1 - x0,
-            height: y1 - y0,
-            data: FrameData::Cpu(pixels),
+            width: w,
+            height: h,
+            data,
         };
         let mailbox = &self.flags.mailbox;
         if let Ok(mut slot) = mailbox.slot.lock() {
@@ -83,6 +179,7 @@ impl GraphicsCaptureApiHandler for Handler {
 pub struct WindowsScreenSource {
     mailbox: Arc<Mailbox>,
     control: Option<CaptureControl<Handler, String>>,
+    gpu: bool,
 }
 
 impl std::fmt::Debug for WindowsScreenSource {
@@ -94,10 +191,21 @@ impl std::fmt::Debug for WindowsScreenSource {
 }
 
 impl WindowsScreenSource {
+    /// CPU frames (for the software encoder).
     pub fn new() -> Self {
         Self {
             mailbox: Arc::new(Mailbox::default()),
             control: None,
+            gpu: false,
+        }
+    }
+
+    /// GPU frames (for a hardware encoder on the same device).
+    pub fn new_gpu() -> Self {
+        Self {
+            mailbox: Arc::new(Mailbox::default()),
+            control: None,
+            gpu: true,
         }
     }
 
@@ -162,6 +270,7 @@ impl ScreenSource for WindowsScreenSource {
             Flags {
                 mailbox: self.mailbox.clone(),
                 crop,
+                gpu: self.gpu,
             },
         );
         let control = Handler::start_free_threaded(settings)

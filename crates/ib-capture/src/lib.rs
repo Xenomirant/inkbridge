@@ -38,18 +38,33 @@ pub struct Display {
     pub primary: bool,
 }
 
-/// Opaque handle to a GPU texture owned by the capture backend (e.g. a D3D11
-/// texture pointer or an `IOSurface` ID). Only the matching encoder backend
-/// interprets it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct GpuHandle(pub u64);
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FrameData {
     /// Tightly packed BGRA8, `width * height * 4` bytes.
     Cpu(Vec<u8>),
-    Gpu(GpuHandle),
+    /// A GPU texture owned by the capture backend; only an encoder on the
+    /// same device consumes it (zero-copy path).
+    Gpu(GpuFrame),
 }
+
+/// Windows: a BGRA D3D11 texture plus the device it lives on. The device is
+/// multithread-protected, so the encoder thread may use it.
+#[cfg(windows)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GpuFrame {
+    pub texture: ::windows::Win32::Graphics::Direct3D11::ID3D11Texture2D,
+    pub device: ::windows::Win32::Graphics::Direct3D11::ID3D11Device,
+}
+
+// SAFETY: D3D11 devices are free-threaded and this one is created with
+// multithread protection enabled; textures are only used through it.
+#[cfg(windows)]
+unsafe impl Send for GpuFrame {}
+
+/// Other platforms have no GPU path yet.
+#[cfg(not(windows))]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GpuFrame(());
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Frame {

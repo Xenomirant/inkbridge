@@ -21,6 +21,10 @@ use tokio::sync::mpsc::error::TrySendError;
 const SOFTWARE_MAX_PIXELS: u64 = 1920 * 1088;
 const FPS: u16 = 60;
 
+/// Creates a replacement capture source (e.g. CPU capture for the software
+/// encoder when the hardware path fails).
+pub type SourceFactory = Box<dyn FnOnce() -> Box<dyn ScreenSource> + Send>;
+
 #[derive(Debug)]
 pub enum VideoCommand {
     SetRegion(Region),
@@ -43,12 +47,36 @@ impl VideoPipeline {
         client_max: (u32, u32),
         out: tokio::sync::mpsc::Sender<VideoChunk>,
     ) -> anyhow::Result<Self> {
-        Self::start_with(ib_capture::platform_source()?, region, client_max, out)
+        // Windows: GPU capture for the hardware encoder, CPU capture as the
+        // fallback if no hardware encoder can be used.
+        #[cfg(windows)]
+        {
+            let fallback: SourceFactory =
+                Box::new(|| Box::new(ib_capture::WindowsScreenSource::new()));
+            Self::start_with(
+                Box::new(ib_capture::WindowsScreenSource::new_gpu()),
+                Some(fallback),
+                region,
+                client_max,
+                out,
+            )
+        }
+        #[cfg(not(windows))]
+        {
+            Self::start_with(
+                ib_capture::platform_source()?,
+                None,
+                region,
+                client_max,
+                out,
+            )
+        }
     }
 
     /// Like [`start`](Self::start) with an explicit capture source (tests).
     pub fn start_with(
         source: Box<dyn ScreenSource>,
+        fallback: Option<SourceFactory>,
         region: Region,
         client_max: (u32, u32),
         out: tokio::sync::mpsc::Sender<VideoChunk>,
@@ -57,7 +85,7 @@ impl VideoPipeline {
         let thread = std::thread::Builder::new()
             .name("inkbridge-video".into())
             .spawn(move || {
-                if let Err(e) = run(source, region, client_max, &rx, &out) {
+                if let Err(e) = run(source, fallback, region, client_max, &rx, &out) {
                     tracing::error!("video pipeline stopped: {e:#}");
                 }
             })?;
@@ -113,18 +141,80 @@ fn encoder_for(region: Region, client_max: (u32, u32)) -> anyhow::Result<OpenH26
     Ok(OpenH264Encoder::new(config)?)
 }
 
+/// Builds an encoder for `frame`: hardware (Media Foundation) for GPU
+/// frames, software (openh264) for CPU frames.
+fn make_encoder(
+    frame: &Frame,
+    region: Region,
+    client_max: (u32, u32),
+) -> anyhow::Result<Box<dyn VideoEncoder>> {
+    match &frame.data {
+        #[cfg(windows)]
+        FrameData::Gpu(gpu) => {
+            // Hardware: the tablet's full resolution, generous bitrate for sharp
+            // text (≈10 bits/pixel/s, capped for Wi-Fi).
+            let (width, height) =
+                fit_within(region.width, region.height, client_max.0, client_max.1);
+            let bitrate_kbps =
+                ((u64::from(width) * u64::from(height) * 10 / 1000) as u32).min(HARDWARE_MAX_KBPS);
+            let config = EncoderConfig {
+                codec: VideoCodec::H264,
+                width,
+                height,
+                fps: FPS,
+                bitrate_kbps,
+            };
+            let enc = ib_encode::MfEncoder::new(&gpu.device, (frame.width, frame.height), config)?;
+            tracing::info!(
+                encoder = enc.encoder_name(),
+                ?region,
+                width,
+                height,
+                bitrate_kbps,
+                "hardware video encoder"
+            );
+            Ok(Box::new(enc))
+        }
+        #[cfg(not(windows))]
+        FrameData::Gpu(_) => anyhow::bail!("no hardware encoder on this platform"),
+        FrameData::Cpu(_) => Ok(Box::new(encoder_for(region, client_max)?)),
+    }
+}
+
+/// Consecutive hardware failures before falling back to software for good.
+const HARDWARE_RETRIES: u32 = 3;
+/// Bitrate ceiling for the hardware path (kbit/s).
+#[cfg(windows)]
+const HARDWARE_MAX_KBPS: u32 = 25_000;
+
 fn run(
     mut source: Box<dyn ScreenSource>,
+    mut fallback: Option<SourceFactory>,
     mut region: Region,
     client_max: (u32, u32),
     commands: &Receiver<VideoCommand>,
     out: &tokio::sync::mpsc::Sender<VideoChunk>,
 ) -> anyhow::Result<()> {
     source.start(region)?;
-    let mut encoder = encoder_for(region, client_max)?;
+    let mut encoder: Option<Box<dyn VideoEncoder>> = None;
+    let mut failures = 0u32;
     let mut force_key = true;
     let mut frame_no = 0u64;
     let mut last: Option<Frame> = None;
+
+    // Switches to CPU capture + software encoding (no usable hardware path).
+    let mut fall_back = |source: &mut Box<dyn ScreenSource>,
+                         region: Region,
+                         why: &anyhow::Error|
+     -> anyhow::Result<()> {
+        let make = fallback
+            .take()
+            .ok_or_else(|| anyhow::anyhow!("video encoding failed: {why:#}"))?;
+        tracing::warn!("hardware video path unavailable ({why:#}); using the software encoder");
+        *source = make();
+        source.start(region)?;
+        Ok(())
+    };
 
     loop {
         loop {
@@ -132,7 +222,7 @@ fn run(
                 Ok(VideoCommand::SetRegion(r)) if r != region => {
                     region = r;
                     source.start(region)?;
-                    encoder = encoder_for(region, client_max)?;
+                    encoder = None; // rebuilt for the new size on the next frame
                     force_key = true;
                     last = None;
                 }
@@ -153,9 +243,41 @@ fn run(
             },
             None => continue,
         };
-        let cfg = encoder.config();
-        let scaled = scale_to(&frame, cfg.width, cfg.height);
-        let encoded = encoder.encode(&scaled, force_key)?;
+
+        if encoder.is_none() {
+            match make_encoder(&frame, region, client_max) {
+                Ok(e) => {
+                    encoder = Some(e);
+                    force_key = true;
+                }
+                Err(e) => {
+                    fall_back(&mut source, region, &e)?;
+                    last = None;
+                    continue;
+                }
+            }
+        }
+        let enc = encoder.as_mut().expect("created above");
+        let cfg = enc.config();
+        let input = scale_to(&frame, cfg.width, cfg.height);
+        let encoded = match enc.encode(&input, force_key) {
+            Ok(e) => {
+                failures = 0;
+                e
+            }
+            Err(e) => {
+                // Rebuild the encoder; after repeated failures, use software.
+                failures += 1;
+                tracing::warn!(failures, "video encode failed: {e}");
+                encoder = None;
+                force_key = true;
+                if failures >= HARDWARE_RETRIES {
+                    fall_back(&mut source, region, &anyhow::Error::new(e))?;
+                    last = None;
+                }
+                continue;
+            }
+        };
         frame_no += 1;
         let chunk = VideoChunk {
             frame_no,
@@ -205,6 +327,7 @@ mod tests {
         };
         let p = VideoPipeline::start_with(
             Box::new(FakeScreenSource::default()),
+            None,
             region,
             (1920, 1080),
             tx,
@@ -271,6 +394,7 @@ mod tests {
         let (tx, mut rx) = tokio::sync::mpsc::channel(8);
         let p = VideoPipeline::start_with(
             Box::new(FakeScreenSource::default()),
+            None,
             Region {
                 x: 0,
                 y: 0,

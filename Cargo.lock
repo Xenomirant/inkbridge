@@ -580,6 +580,7 @@ dependencies = [
  "ib-clock",
  "ib-protocol",
  "thiserror",
+ "windows",
  "windows-capture",
 ]
 
@@ -598,6 +599,7 @@ dependencies = [
  "ib-protocol",
  "openh264",
  "thiserror",
+ "windows",
 ]
 
 [[package]]
@@ -636,6 +638,7 @@ dependencies = [
  "ib-session",
  "ib-transport",
  "if-addrs",
+ "openh264",
  "qrcode",
  "thiserror",
  "tokio",

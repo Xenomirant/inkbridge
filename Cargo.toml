@@ -61,6 +61,8 @@ module_name_repetitions = "allow"
 similar_names = "allow"
 doc_markdown = "allow"
 struct_field_names = "allow"
+# The `windows` crate takes pointers to locals throughout; `&raw` adds noise, not safety.
+borrow_as_ptr = "allow"
 must_use_candidate = "allow"
 missing_errors_doc = "allow"
 cast_precision_loss = "allow"
