@@ -16,12 +16,22 @@ publish = false
 ib-protocol = { path = "crates/ib-protocol" }
 ib-geometry = { path = "crates/ib-geometry" }
 ib-capture = { path = "crates/ib-capture" }
+ib-transport = { path = "crates/ib-transport" }
 
 # External crates (versions pinned centrally)
 serde = { version = "1", features = ["derive"] }
 postcard = { version = "1", default-features = false, features = ["use-std"] }
 thiserror = "2"
 proptest = "1"
+tracing = "0.1"
+tokio = { version = "1.54", features = ["rt", "net", "time", "sync", "io-util"] }
+bytes = "1"
+# QUIC with the `ring` crypto provider: aws-lc-rs would need CMake + NASM on Windows.
+quinn = { version = "0.11.12", default-features = false, features = ["runtime-tokio", "rustls-ring"] }
+rustls = { version = "0.23", default-features = false, features = ["std", "ring"] }
+rcgen = { version = "0.14", default-features = false, features = ["crypto", "ring"] }
+ring = "0.17"
+subtle = "2.6"
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"
@@ -34,6 +44,7 @@ pedantic = { level = "warn", priority = -1 }
 module_name_repetitions = "allow"
 similar_names = "allow"
 doc_markdown = "allow"
+struct_field_names = "allow"
 must_use_candidate = "allow"
 missing_errors_doc = "allow"
 cast_precision_loss = "allow"

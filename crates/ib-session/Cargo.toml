@@ -1,0 +1,22 @@
+[package]
+name = "ib-session"
+description = "Inkbridge session logic shared by host and clients: handshake, pairing, pen stream state."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[dependencies]
+ib-protocol.workspace = true
+ib-transport.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
+[lints]
+workspace = true

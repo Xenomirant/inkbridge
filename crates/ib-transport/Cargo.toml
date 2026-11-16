@@ -1,0 +1,28 @@
+[package]
+name = "ib-transport"
+description = "Inkbridge transport: QUIC endpoints, pinned-certificate identities, pairing offers and message framing."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[dependencies]
+ib-protocol.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tokio.workspace = true
+bytes.workspace = true
+quinn.workspace = true
+rustls.workspace = true
+rcgen.workspace = true
+ring.workspace = true
+subtle.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
+[lints]
+workspace = true

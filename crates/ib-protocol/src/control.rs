@@ -41,8 +41,13 @@ pub struct HostHello {
 pub enum RejectReason {
     IncompatibleVersion,
     NotPaired,
+    /// Pairing attempted with a wrong or expired one-time secret.
+    BadPairingSecret,
     Busy,
 }
+
+/// Length of the one-time pairing secret carried in the QR code.
+pub const PAIRING_SECRET_LEN: usize = 16;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Reject {
@@ -53,6 +58,15 @@ pub struct Reject {
 /// Messages on the reliable control stream.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ControlMessage {
+    /// First message from an unpaired client: proves it scanned the host's QR
+    /// code. On success the host remembers the client's certificate.
+    PairRequest {
+        secret: [u8; PAIRING_SECRET_LEN],
+        device_name: String,
+    },
+    PairAccepted {
+        host_name: String,
+    },
     ClientHello(ClientHello),
     HostHello(HostHello),
     Reject(Reject),

@@ -19,7 +19,9 @@ mod video;
 
 pub use caps::{Capabilities, PenFeatures, TransportKind, VideoCodec};
 pub use codec::{DecodeError, EncodeError, MAX_MESSAGE_LEN, decode, encode};
-pub use control::{ClientHello, ControlMessage, HostHello, Region, Reject, RejectReason};
+pub use control::{
+    ClientHello, ControlMessage, HostHello, PAIRING_SECRET_LEN, Region, Reject, RejectReason,
+};
 pub use pen::{Buttons, PenBatch, PenSample, PenState, Tool};
 pub use version::{PROTOCOL_VERSION, ProtocolVersion};
 pub use video::{FrameKind, VideoChunk};
