@@ -105,14 +105,62 @@ mod platform {
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "linux")]
 mod platform {
     use std::net::Ipv4Addr;
 
-    /// Linux/macOS detection arrives with those hosts (M3/M4).
+    /// (driver name, IPv4 gateways) for every network interface. The kernel
+    /// driver identifies tethering (`rndis_host`, `cdc_ncm`, `cdc_ether`);
+    /// the gateway comes from the routing table.
+    pub fn adapters() -> Vec<(String, Vec<Ipv4Addr>)> {
+        let routes = std::fs::read_to_string("/proc/net/route").unwrap_or_default();
+        let gateways = super::parse_proc_net_route(&routes);
+        let Ok(entries) = std::fs::read_dir("/sys/class/net") else {
+            return Vec::new();
+        };
+        entries
+            .flatten()
+            .filter_map(|e| {
+                let iface = e.file_name().to_string_lossy().into_owned();
+                let driver = std::fs::read_link(e.path().join("device/driver")).ok()?;
+                let driver = driver.file_name()?.to_string_lossy().into_owned();
+                let gws = gateways
+                    .iter()
+                    .filter(|(i, _)| *i == iface)
+                    .map(|(_, g)| *g)
+                    .collect();
+                Some((driver, gws))
+            })
+            .collect()
+    }
+}
+
+#[cfg(not(any(windows, target_os = "linux")))]
+mod platform {
+    use std::net::Ipv4Addr;
+
+    /// macOS detection arrives with that host (M4).
     pub fn adapters() -> Vec<(String, Vec<Ipv4Addr>)> {
         Vec::new()
     }
+}
+
+/// (interface, gateway) pairs from Linux's `/proc/net/route` (hex, host
+/// byte order), for routes that have a gateway.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn parse_proc_net_route(text: &str) -> Vec<(String, Ipv4Addr)> {
+    const RTF_GATEWAY: u32 = 0x2;
+    text.lines()
+        .skip(1)
+        .filter_map(|line| {
+            let cols: Vec<&str> = line.split_whitespace().collect();
+            let (iface, gateway, flags) = (cols.first()?, cols.get(2)?, cols.get(3)?);
+            let flags = u32::from_str_radix(flags, 16).ok()?;
+            let gw = u32::from_str_radix(gateway, 16).ok()?;
+            (flags & RTF_GATEWAY != 0 && gw != 0)
+                .then(|| ((*iface).to_owned(), Ipv4Addr::from(gw.to_le_bytes())))
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -120,7 +168,20 @@ mod tests {
     use super::*;
 
     #[test]
+    fn parses_linux_routing_table() {
+        let table = "Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\n\
+                     usb0\t00000000\t8C98A8C0\t0003\t0\t0\t100\t00000000\n\
+                     eth0\t0050CC0A\t00000000\t0001\t0\t0\t0\t00F8FFFF\n";
+        assert_eq!(
+            parse_proc_net_route(table),
+            vec![("usb0".to_owned(), Ipv4Addr::new(192, 168, 152, 140))]
+        );
+    }
+
+    #[test]
     fn recognises_android_tethering_adapters() {
+        assert!(is_tether_adapter("rndis_host"));
+        assert!(is_tether_adapter("cdc_ncm"));
         assert!(is_tether_adapter(
             "Remote NDIS based Internet Sharing Device"
         ));

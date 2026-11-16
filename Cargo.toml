@@ -46,6 +46,11 @@ if-addrs = "0.15"
 # Software H.264 (Cisco, BSD-2-Clause), built from source: universal fallback encoder.
 openh264 = "0.9.10"
 windows-capture = "2.0.1"
+# Linux: uinput virtual pen (pure Rust).
+evdev = "0.13.2"
+# Linux: X11 screen capture (pure-Rust client: shared memory + damage).
+x11rb = { version = "0.14", features = ["shm", "damage", "xfixes"] }
+libc = "0.2"
 # Rust <-> Kotlin/Swift bindings; pre-1.0, so pinned to a minor version (ADR-0001).
 uniffi = "=0.32.2"
 

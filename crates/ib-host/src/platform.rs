@@ -61,6 +61,43 @@ pub fn set_usb_routing(fix: bool) -> anyhow::Result<()> {
     }
 }
 
+/// The udev rule behind `--setup-uinput`: gives the logged-in desktop user
+/// (systemd-logind's `uaccess`, as for webcams) access to `/dev/uinput`.
+pub const UINPUT_RULE_PATH: &str = "/etc/udev/rules.d/60-inkbridge-uinput.rules";
+pub const UINPUT_RULE: &str = "# Inkbridge: let the logged-in user create a virtual pen (uinput).\n\
+KERNEL==\"uinput\", SUBSYSTEM==\"misc\", TAG+=\"uaccess\", OPTIONS+=\"static_node=uinput\"\n";
+pub const UINPUT_MODULE_PATH: &str = "/etc/modules-load.d/inkbridge-uinput.conf";
+
+/// Advanced option (Linux, one admin prompt): installs or removes the uinput
+/// access rule. Uses `pkexec` (the desktop's own admin prompt) when present.
+pub fn set_uinput_access(enable: bool) -> anyhow::Result<()> {
+    let script = if enable {
+        format!(
+            "printf '%s' '{UINPUT_RULE}' > {UINPUT_RULE_PATH} && echo uinput > {UINPUT_MODULE_PATH} && \
+             modprobe uinput && udevadm control --reload-rules && udevadm trigger --name-match=uinput"
+        )
+    } else {
+        format!("rm -f {UINPUT_RULE_PATH} {UINPUT_MODULE_PATH} && udevadm control --reload-rules")
+    };
+    let has_pkexec = std::process::Command::new("pkexec")
+        .arg("--version")
+        .output()
+        .is_ok();
+    if !has_pkexec {
+        anyhow::bail!(
+            "no graphical admin prompt (pkexec) found. Run instead:\n  sudo sh -c \"{script}\""
+        );
+    }
+    let status = std::process::Command::new("pkexec")
+        .args(["sh", "-c", &script])
+        .status()?;
+    anyhow::ensure!(
+        status.success(),
+        "the admin prompt was declined or the commands failed"
+    );
+    Ok(())
+}
+
 /// Gives the pen thread priority over normal work so injection isn't
 /// delayed by background load.
 pub fn raise_thread_priority() {
@@ -93,6 +130,14 @@ pub fn primary_display() -> Region {
                 width,
                 height,
             };
+        }
+    }
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(d) = ib_capture::platform_source().and_then(|s| s.displays())
+            && let Some(primary) = d.into_iter().find(|d| d.primary)
+        {
+            return primary.bounds;
         }
     }
     Region {

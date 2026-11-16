@@ -11,8 +11,12 @@
 
 #[cfg(windows)]
 mod windows;
+#[cfg(target_os = "linux")]
+mod x11;
 #[cfg(windows)]
 pub use windows::WindowsScreenSource;
+#[cfg(target_os = "linux")]
+pub use x11::X11ScreenSource;
 
 use std::time::Duration;
 
@@ -94,10 +98,22 @@ pub fn platform_source() -> Result<Box<dyn ScreenSource>, CaptureError> {
     {
         Ok(Box::new(WindowsScreenSource::new()))
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "linux")]
+    {
+        // Wayland sessions need the screen-cast portal (XWayland only sees
+        // X11 apps, not the desktop).
+        if std::env::var("XDG_SESSION_TYPE").is_ok_and(|t| t == "wayland") {
+            return Err(CaptureError::Unavailable(
+                "Wayland screen capture (portal + PipeWire) isn't available yet; X11 sessions work"
+                    .into(),
+            ));
+        }
+        Ok(Box::new(X11ScreenSource::connect()?))
+    }
+    #[cfg(not(any(windows, target_os = "linux")))]
     {
         Err(CaptureError::Unavailable(
-            "no screen capture backend for this OS yet (Linux in M3, macOS in M4)".into(),
+            "no screen capture backend for this OS yet (macOS in M4)".into(),
         ))
     }
 }

@@ -8,10 +8,14 @@
 //!
 //! [`FakePenSink`] records events for tests and the CI loopback pipeline.
 
+#[cfg(target_os = "linux")]
+mod linux;
 mod tracker;
 #[cfg(windows)]
 mod windows;
 
+#[cfg(target_os = "linux")]
+pub use linux::UinputPenSink;
 pub use tracker::{PenTracker, Step};
 #[cfg(windows)]
 pub use windows::WindowsPenSink;
@@ -27,16 +31,23 @@ pub struct TouchPoint {
     pub phase: TouchPhase,
 }
 
-/// The best pen backend available on this OS.
-pub fn platform_sink() -> Result<Box<dyn PenSink>, InjectError> {
+/// The best pen backend available on this OS. `desktop` is the bounding box
+/// of all monitors in physical pixels (needed by absolute-device backends).
+pub fn platform_sink(desktop: ib_geometry::Region) -> Result<Box<dyn PenSink>, InjectError> {
     #[cfg(windows)]
     {
+        let _ = desktop;
         Ok(Box::new(WindowsPenSink::new()?))
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "linux")]
     {
+        Ok(Box::new(UinputPenSink::new(desktop)?))
+    }
+    #[cfg(not(any(windows, target_os = "linux")))]
+    {
+        let _ = desktop;
         Err(InjectError::Unavailable(
-            "no pen backend for this OS yet (Linux in M3, macOS in M4)".into(),
+            "no pen backend for this OS yet (macOS in M4)".into(),
         ))
     }
 }

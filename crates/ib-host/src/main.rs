@@ -41,11 +41,15 @@ fn parse_args() -> anyhow::Result<Args> {
             "--fake-sink" => args.fake_sink = true,
             "--fix-usb-routing" => std::process::exit(run_routing(true)),
             "--undo-usb-routing" => std::process::exit(run_routing(false)),
+            "--setup-uinput" => std::process::exit(run_uinput(true)),
+            "--remove-uinput-setup" => std::process::exit(run_uinput(false)),
             "-h" | "--help" => {
                 println!(
                     "inkbridge-host [--port N] [--pair] [--fake-sink]\n\
                      inkbridge-host --fix-usb-routing    keep internet traffic off USB-tethered tablets (asks for admin once)\n\
-                     inkbridge-host --undo-usb-routing   restore Windows' automatic routing for them"
+                     inkbridge-host --undo-usb-routing   restore Windows' automatic routing for them\n\
+                     inkbridge-host --setup-uinput       Linux: allow pen pressure via a virtual tablet (asks for admin once)\n\
+                     inkbridge-host --remove-uinput-setup  Linux: undo --setup-uinput"
                 );
                 std::process::exit(0);
             }
@@ -53,6 +57,25 @@ fn parse_args() -> anyhow::Result<Args> {
         }
     }
     Ok(args)
+}
+
+fn run_uinput(enable: bool) -> i32 {
+    match ib_host::platform::set_uinput_access(enable) {
+        Ok(()) if enable => {
+            println!(
+                "Done. Log out and back in once (or replug nothing: usually immediate); pen pressure is now available."
+            );
+            0
+        }
+        Ok(()) => {
+            println!("Removed. Inkbridge falls back to features that need no special access.");
+            0
+        }
+        Err(e) => {
+            eprintln!("{e:#}");
+            1
+        }
+    }
 }
 
 fn run_routing(fix: bool) -> i32 {
@@ -121,7 +144,7 @@ async fn main() -> anyhow::Result<()> {
     let make_sink: SinkFactory = if args.fake_sink {
         Box::new(|| Ok(Box::new(LoggingSink(FakePenSink::default())) as Box<dyn PenSink>))
     } else {
-        Box::new(ib_inject::platform_sink)
+        Box::new(move || ib_inject::platform_sink(region))
     };
     let features = if args.fake_sink {
         FakePenSink::default().features()
