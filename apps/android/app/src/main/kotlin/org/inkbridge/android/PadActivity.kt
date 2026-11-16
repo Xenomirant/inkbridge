@@ -51,6 +51,8 @@ class PadActivity : ComponentActivity() {
 
         pad = PenPadView(this, session)
         val screen = if (session.hasVideo()) SurfaceView(this) else null
+        val ink = if (screen != null) InkLayer(this) else null
+        pad.inkLayer = ink
         info = TextView(this).apply {
             textSize = 13f; alpha = 0.7f; setPadding(24, 12, 24, 12); setTextColor(Color.DKGRAY)
         }
@@ -62,6 +64,7 @@ class PadActivity : ComponentActivity() {
         setContentView(FrameLayout(this).apply {
             setBackgroundColor(Color.BLACK)
             screen?.let { addView(it, FrameLayout.LayoutParams(0, 0)) }
+            ink?.let { addView(it.view) }
             addView(pad)
             addView(clear, FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.START,

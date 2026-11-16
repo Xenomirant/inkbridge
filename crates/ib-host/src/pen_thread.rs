@@ -25,6 +25,9 @@ pub enum PenInput {
     SetRegion(Region),
     /// Multi-finger gesture frame.
     Touch(Vec<TouchContact>),
+    /// How finger gestures map to the desktop (per session: absolute when the
+    /// tablet shows the screen, anchored at the cursor otherwise).
+    SetTouchMapping(TouchMapping),
     /// The tablet disconnected: release the pen and reset sequence state.
     Disconnected,
     Shutdown,
@@ -89,6 +92,13 @@ fn run(mut sink: Box<dyn PenSink>, mut region: Region, rx: &Receiver<PenInput>) 
                 }
             }
             PenInput::SetRegion(r) => region = r,
+            PenInput::SetTouchMapping(m) => {
+                let cancelled = touch.cancel();
+                if !cancelled.is_empty() {
+                    inject_touch(&mut sink, &cancelled);
+                }
+                touch = TouchMapper::new(m);
+            }
             PenInput::Touch(contacts) => {
                 let contacts: Vec<TouchContact> = contacts
                     .into_iter()

@@ -5,6 +5,7 @@ activity = "1.13.0"
 camerax = "1.6.2"
 zxing = "3.5.4"
 jna = "5.19.1"
+graphicsCore = "1.0.4"
 junit = "4.13.2"
 
 [libraries]
@@ -14,6 +15,7 @@ camera-lifecycle = { module = "androidx.camera:camera-lifecycle", version.ref = 
 camera-view = { module = "androidx.camera:camera-view", version.ref = "camerax" }
 zxing-core = { module = "com.google.zxing:core", version.ref = "zxing" }
 jna = { module = "net.java.dev.jna:jna", version.ref = "jna" }
+graphics-core = { module = "androidx.graphics:graphics-core", version.ref = "graphicsCore" }
 junit = { module = "junit:junit", version.ref = "junit" }
 
 [plugins]

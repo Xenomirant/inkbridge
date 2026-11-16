@@ -90,8 +90,12 @@ class PenPadView(context: Context, private val session: Session) : View(context)
         isFocusable = true
     }
 
+    /** Front-buffered ink over the video (video mode only). */
+    var inkLayer: InkLayer? = null
+
     fun clearInk() {
         ink?.eraseColor(Color.TRANSPARENT); invalidate()
+        inkLayer?.clear()
     }
 
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
@@ -252,8 +256,10 @@ class PenPadView(context: Context, private val session: Session) : View(context)
         lastSample?.copy(contact = contact, pressure = 0f, tUs = lastSample!!.tUs + 1u)
 
     private fun drawLocal(ev: MotionEvent, i: Int, contact: PenContact) {
-        val c = inkCanvas ?: return
         if (contact != PenContact.CONTACT) { lastX = Float.NaN; return }
+        val front = inkLayer
+        val c = inkCanvas
+        if (front == null && c == null) return
         val eraser = ev.getToolType(i) == MotionEvent.TOOL_TYPE_ERASER
         inkPaint.color = if (eraser) Color.rgb(250, 250, 250) else Color.rgb(60, 120, 255)
         for (h in 0..ev.historySize) {
@@ -261,11 +267,17 @@ class PenPadView(context: Context, private val session: Session) : View(context)
             val y = if (h < ev.historySize) ev.getHistoricalY(i, h) else ev.getY(i)
             val p = if (h < ev.historySize) ev.getHistoricalPressure(i, h) else ev.getPressure(i)
             if (!lastX.isNaN()) {
-                inkPaint.strokeWidth = if (eraser) 40f else 1.5f + p.coerceIn(0f, 1f) * 9f
-                c.drawLine(lastX, lastY, x, y, inkPaint)
+                val w = if (eraser) 40f else 1.5f + p.coerceIn(0f, 1f) * 9f
+                if (front != null) {
+                    // Video mode: straight into the front buffer (next refresh).
+                    front.draw(InkLayer.Segment(lastX, lastY, x, y, w, eraser))
+                } else {
+                    inkPaint.strokeWidth = w
+                    c?.drawLine(lastX, lastY, x, y, inkPaint)
+                }
             }
             lastX = x; lastY = y
         }
-        invalidate()
+        if (front == null) invalidate()
     }
 }

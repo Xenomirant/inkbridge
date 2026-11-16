@@ -13,6 +13,7 @@ use tokio::sync::Mutex;
 
 use crate::clock::now_us;
 use crate::pen_thread::PenInput;
+use crate::touch::TouchMapping;
 use crate::video::VideoPipeline;
 
 /// Encoded frames waiting for the network. Small on purpose: a deep queue is
@@ -177,6 +178,15 @@ impl Host {
                 Err(e) => tracing::warn!("screen streaming unavailable: {e:#}"),
             }
         }
+
+        // Fingers act where they touch the picture when the tablet shows it;
+        // otherwise (pen-only) gestures start at the cursor.
+        let mapping = if session.video.is_some() {
+            TouchMapping::Absolute
+        } else {
+            TouchMapping::AnchoredAtPointer
+        };
+        let _ = self.pen.send(PenInput::SetTouchMapping(mapping));
 
         // Datagrams → pen thread, on their own task.
         let pen_rx = conn.pen();
