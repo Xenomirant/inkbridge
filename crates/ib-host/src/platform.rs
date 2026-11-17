@@ -178,7 +178,7 @@ pub fn explain_permissions() {
 /// option), else on Wayland the portal pointer (no setup, no pressure).
 pub fn pen_sink(desktop: Region) -> Result<Box<dyn ib_inject::PenSink>, ib_inject::InjectError> {
     #[cfg(target_os = "macos")]
-    if let Some(id) = DISPLAY.get().and_then(|&id| u32::try_from(id).ok()) {
+    if let Some(id) = chosen_display().and_then(|id| u32::try_from(id).ok()) {
         return Ok(Box::new(ib_inject::MacPenSink::on_display(id)));
     }
     let sink = ib_inject::platform_sink(desktop);
@@ -193,8 +193,48 @@ pub fn pen_sink(desktop: Region) -> Result<Box<dyn ib_inject::PenSink>, ib_injec
     sink
 }
 
-/// The display chosen with `--display`, if it isn't the main one.
-static DISPLAY: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+/// The display being shown (its capture id), if it isn't the main one.
+/// Set by `--display` and by the tablet's display menu.
+static DISPLAY: std::sync::Mutex<Option<u64>> = std::sync::Mutex::new(None);
+
+fn chosen_display() -> Option<u64> {
+    *DISPLAY
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// Position in [`displays`] of the display being shown.
+pub fn current_display() -> usize {
+    let chosen = chosen_display();
+    displays()
+        .iter()
+        .position(|d| Some(d.id) == chosen)
+        .unwrap_or(0)
+}
+
+/// Makes the display at `index` of [`displays`] the one new captures and
+/// the pen use. The caller restarts capture and tells the pen thread.
+pub fn switch_display(index: usize) -> anyhow::Result<ib_capture::Display> {
+    let all = displays();
+    let Some(display) = all.get(index) else {
+        anyhow::bail!(
+            "there is no display {}. Connected displays:\n{}",
+            index + 1,
+            describe_displays()
+        );
+    };
+    if !display.primary {
+        anyhow::ensure!(
+            cfg!(target_os = "macos"),
+            "choosing a display works on macOS only so far"
+        );
+    }
+    *DISPLAY
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) =
+        (!display.primary).then_some(display.id);
+    Ok(display.clone())
+}
 
 /// The displays the host could show, main display first.
 pub fn displays() -> Vec<ib_capture::Display> {
@@ -232,25 +272,13 @@ pub fn describe_displays() -> String {
     lines.join("\n")
 }
 
-/// Makes display `number` (1-based, as listed) the one this host shows and
-/// draws on, and returns its size. Call once, before the pen and capture
-/// backends are made.
+/// `--display N`: display `number` (1-based, as listed) is shown and drawn
+/// on. Returns its size.
 pub fn select_display(number: usize) -> anyhow::Result<Region> {
-    let all = displays();
-    let Some(display) = number.checked_sub(1).and_then(|i| all.get(i)) else {
-        anyhow::bail!(
-            "there is no display {number}. Connected displays:\n{}",
-            describe_displays()
-        );
+    let Some(index) = number.checked_sub(1) else {
+        anyhow::bail!("displays are numbered from 1:\n{}", describe_displays());
     };
-    if !display.primary {
-        anyhow::ensure!(
-            cfg!(target_os = "macos"),
-            "choosing a display works on macOS only so far"
-        );
-        let _ = DISPLAY.set(display.id);
-    }
-    Ok(display.bounds)
+    Ok(switch_display(index)?.bounds)
 }
 
 /// macOS screen capture on the chosen display.
@@ -261,8 +289,8 @@ pub fn mac_source(gpu: bool) -> Result<ib_capture::MacScreenSource, ib_capture::
     } else {
         ib_capture::MacScreenSource::new()?
     };
-    match DISPLAY.get() {
-        Some(&id) => source.on_display(id),
+    match chosen_display() {
+        Some(id) => source.on_display(id),
         None => Ok(source),
     }
 }

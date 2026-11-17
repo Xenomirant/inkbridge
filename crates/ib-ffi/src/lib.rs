@@ -114,6 +114,23 @@ pub struct HostInfo {
     pub eraser: bool,
 }
 
+/// One of the computer's displays, for the tablet's display menu.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct HostDisplay {
+    pub name: String,
+    pub width: u32,
+    pub height: u32,
+    /// The one being shown.
+    pub current: bool,
+}
+
+/// The computer's displays as last announced, and the one being shown.
+#[derive(Debug, Default)]
+struct DisplayChoice {
+    displays: Vec<ib_protocol::DisplayInfo>,
+    current: usize,
+}
+
 /// Live latency figures for the on-screen overlay (milliseconds, medians
 /// over the last few seconds unless noted).
 #[derive(Debug, Clone, Default, uniffi::Record)]
@@ -334,6 +351,8 @@ pub struct Session {
     host: HostInfo,
     /// Current desktop region size, updated by the computer.
     region: Arc<Mutex<ib_protocol::Region>>,
+    /// Displays to choose from; empty if the computer offers no choice.
+    displays: Arc<Mutex<DisplayChoice>>,
     /// Incoming encoded video, if the session streams the screen.
     video: Option<Mutex<mpsc::Receiver<VideoChunk>>>,
     telemetry: Arc<Mutex<Telemetry>>,
@@ -430,7 +449,45 @@ impl Session {
             h.region_width = g.width;
             h.region_height = g.height;
         }
+        // After a display change the bounds are those of the new display.
+        if let Ok(g) = self.displays.lock()
+            && let Some(d) = g.displays.get(g.current)
+        {
+            h.display_x = d.bounds.x;
+            h.display_y = d.bounds.y;
+            h.display_width = d.bounds.width;
+            h.display_height = d.bounds.height;
+        }
         h
+    }
+
+    /// The computer's displays, if it has more than one and lets the
+    /// tablet choose (otherwise empty).
+    pub fn displays(&self) -> Vec<HostDisplay> {
+        let Ok(g) = self.displays.lock() else {
+            return Vec::new();
+        };
+        g.displays
+            .iter()
+            .enumerate()
+            .map(|(i, d)| HostDisplay {
+                name: d.name.clone(),
+                width: d.bounds.width,
+                height: d.bounds.height,
+                current: i == g.current,
+            })
+            .collect()
+    }
+
+    /// Asks the computer to show and draw on another display (an index
+    /// into `displays()`). The change arrives via `displays()` and
+    /// `host()`. Never blocks.
+    pub fn select_display(&self, index: u32) -> Result<(), InkbridgeError> {
+        let index =
+            u8::try_from(index).map_err(|_| InkbridgeError::Transport("no such display".into()))?;
+        self.control_tx
+            .send(ControlMessage::SelectDisplay { index })
+            .map_err(|_| InkbridgeError::Transport("session closed".into()))
     }
 
     /// Asks the computer to show this part of its display (zoomable view),
@@ -706,6 +763,7 @@ impl Session {
             closed: tasks.closed,
             host,
             region: tasks.region,
+            displays: tasks.displays,
             video,
             telemetry: tasks.telemetry,
         }))
@@ -717,6 +775,7 @@ struct SessionTasks {
     control_tx: mpsc::UnboundedSender<ControlMessage>,
     closed: Arc<AtomicBool>,
     region: Arc<Mutex<ib_protocol::Region>>,
+    displays: Arc<Mutex<DisplayChoice>>,
     telemetry: Arc<Mutex<Telemetry>>,
 }
 
@@ -749,9 +808,19 @@ fn spawn_session_tasks(
     let region_reader = region.clone();
     let telemetry = Arc::new(Mutex::new(Telemetry::default()));
     let telemetry_reader = telemetry.clone();
+    let displays = Arc::new(Mutex::new(DisplayChoice::default()));
+    let displays_reader = displays.clone();
     runtime.spawn(async move {
         while let Ok(msg) = receiver.recv().await {
             match msg {
+                ControlMessage::Displays { displays, current } => {
+                    if let Ok(mut g) = displays_reader.lock() {
+                        *g = DisplayChoice {
+                            displays,
+                            current: usize::from(current),
+                        };
+                    }
+                }
                 ControlMessage::SetRegion(r) => {
                     if let Ok(mut g) = region_reader.lock() {
                         *g = r;
@@ -805,6 +874,7 @@ fn spawn_session_tasks(
         control_tx,
         closed,
         region,
+        displays,
         telemetry,
     }
 }

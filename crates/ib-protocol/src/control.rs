@@ -82,6 +82,15 @@ impl TouchContact {
     pub const MAX: usize = 5;
 }
 
+/// A display the host can show.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DisplayInfo {
+    /// Name for the tablet's menu ("Built-in display").
+    pub name: String,
+    /// Its bounds, in the coordinates `SetRegion` uses while it is shown.
+    pub bounds: Region,
+}
+
 /// Messages on the reliable control stream.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ControlMessage {
@@ -146,4 +155,17 @@ pub enum ControlMessage {
         kbps: u32,
     },
     Goodbye,
+    /// Host → client (protocol 0.2+): the displays the tablet can choose
+    /// from and the index of the one being shown. Sent when there is more
+    /// than one, after the session starts and after every switch.
+    Displays {
+        displays: Vec<DisplayInfo>,
+        current: u8,
+    },
+    /// Client → host (protocol 0.2+): show and draw on this display (an
+    /// index into the last `Displays`). The host answers with `SetRegion`
+    /// and `Displays`.
+    SelectDisplay {
+        index: u8,
+    },
 }

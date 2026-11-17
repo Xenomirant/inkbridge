@@ -24,6 +24,8 @@ pub enum PenInput {
     Batch(PenBatch),
     Transition(PenSample),
     SetRegion(Region),
+    /// The tablet now shows another display (the capture backend's id).
+    SetDisplay(u64),
     /// Multi-finger gesture frame.
     Touch(Vec<TouchContact>),
     /// How finger gestures map to the desktop (per session: absolute when the
@@ -132,6 +134,12 @@ impl PenThread {
                 }
             }
             PenInput::SetRegion(r) => self.region = r,
+            PenInput::SetDisplay(id) => {
+                // Nothing may stay pressed on the display we leave.
+                self.cancel_gestures();
+                let _ = self.sink.release();
+                self.sink.set_display(id);
+            }
             PenInput::SetTouchMapping(m) => {
                 self.cancel_gestures();
                 self.mapping = m;

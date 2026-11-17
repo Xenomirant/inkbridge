@@ -25,6 +25,10 @@ Encoding: [postcard](https://postcard.jamesmunns.com/) (compact, varint-based). 
 - **Clock sync:** either side sends `Ping { t0 }` about once a second, and the peer answers `Pong { t0, t1, t2 }`. `ib-clock::ClockSync` keeps a min-RTT estimate of the offset.
 - **Video:** `VideoChunk { frame_no, kind, capture_t_us, encode_done_t_us, payload }` with an Annex-B bitstream. The client may send `RequestKeyframe` (decoder reset, loss) and `BitrateHint`.
 - **Region:** either side may send `SetRegion` to change the mapped desktop area.
+- **Displays (0.2):** a host with more than one display sends `Displays` (names, bounds, the one
+  shown) after the hello and after every change. The client may send `SelectDisplay` with an index
+  into that list; the host answers with `Displays` and then `SetRegion`, and the video restarts with
+  a keyframe. Hosts send `Displays` only to clients whose hello says 0.2 or newer.
 - **End:** `Goodbye`, then close. Hosts release the pen (`PenSink::release`) on any disconnect.
 
 ## Versioning

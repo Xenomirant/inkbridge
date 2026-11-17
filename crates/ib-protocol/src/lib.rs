@@ -20,11 +20,11 @@ mod video;
 pub use caps::{Capabilities, PenFeatures, TransportKind, VideoCodec};
 pub use codec::{DecodeError, EncodeError, MAX_MESSAGE_LEN, decode, encode};
 pub use control::{
-    ClientHello, ControlMessage, HostHello, PAIRING_SECRET_LEN, Region, Reject, RejectReason,
-    TouchContact, TouchPhase,
+    ClientHello, ControlMessage, DisplayInfo, HostHello, PAIRING_SECRET_LEN, Region, Reject,
+    RejectReason, TouchContact, TouchPhase,
 };
 pub use pen::{Buttons, PenBatch, PenSample, PenState, Tool};
-pub use version::{PROTOCOL_VERSION, ProtocolVersion};
+pub use version::{DISPLAY_CHOICE_MINOR, PROTOCOL_VERSION, ProtocolVersion};
 
 /// Default UDP port: the host listens here (Wi-Fi), and a tablet listens here
 /// on its USB tethering link for the host to dial in. Below 32768, outside

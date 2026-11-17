@@ -107,6 +107,11 @@ pub trait PenSink: Send {
         ))
     }
 
+    /// Puts the pen on another display (an id from the capture backend's
+    /// display list): desktop positions are relative to it from now on.
+    /// Backends that address the whole desktop ignore this.
+    fn set_display(&mut self, _id: u64) {}
+
     /// Moves the mouse pointer (so scrolling targets the window under the
     /// fingers).
     fn move_pointer(&mut self, _at: DesktopPoint) -> Result<(), InjectError> {

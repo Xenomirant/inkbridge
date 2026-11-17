@@ -183,9 +183,15 @@ impl MacPenSink {
     /// A pen for another display than the main one: desktop pixels are
     /// then relative to that display's top-left corner.
     pub fn on_display(id: u32) -> Self {
-        let mut sink = Self::with_scale(display(id).1);
-        sink.origin = CGDisplayBounds(id).origin;
+        let mut sink = Self::with_scale(1.0);
+        sink.use_display(id);
         sink
+    }
+
+    fn use_display(&mut self, id: u32) {
+        let scale = display(id).1;
+        self.scale = if scale > 0.0 { scale } else { 1.0 };
+        self.origin = CGDisplayBounds(id).origin;
     }
 
     fn with_scale(scale: f64) -> Self {
@@ -313,6 +319,12 @@ impl MacPenSink {
 impl PenSink for MacPenSink {
     fn name(&self) -> &'static str {
         "macos-cgevent"
+    }
+
+    fn set_display(&mut self, id: u64) {
+        if let Ok(id) = u32::try_from(id) {
+            self.use_display(id);
+        }
     }
 
     fn features(&self) -> PenFeatures {

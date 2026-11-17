@@ -41,6 +41,8 @@ class PadActivity : ComponentActivity() {
             .createWifiLock(WifiManager.WIFI_MODE_FULL_LOW_LATENCY, "inkbridge:pad")
             .apply { setReferenceCounted(false) }
     }
+    /** Opens the display menu; shown only when the computer has several. */
+    private var screens: Button? = null
     private var ticks = 0
     private val ticker = object : Runnable {
         override fun run() {
@@ -57,6 +59,7 @@ class PadActivity : ComponentActivity() {
                 return
             }
             val host = s.host()
+            screens?.visibility = if (s.displays().size > 1) android.view.View.VISIBLE else android.view.View.GONE
             pad.onHostRegion(host.regionX, host.regionY, host.regionWidth, host.regionHeight)
             info.text = if (s.hasVideo()) {
                 val l = s.latency()
@@ -106,9 +109,17 @@ class PadActivity : ComponentActivity() {
             alpha = 0.85f
             setOnClickListener { pad.fitWholeDisplay() }
         }
+        // Which of the computer's displays to show and draw on.
+        val choose = Button(this).apply {
+            text = "Screen"
+            alpha = 0.85f
+            visibility = android.view.View.GONE
+            setOnClickListener { chooseDisplay(session) }
+        }
+        screens = choose
         val tools = android.widget.LinearLayout(this).apply {
             orientation = android.widget.LinearLayout.HORIZONTAL
-            addView(clear); if (screen != null) { addView(view); addView(fit) }
+            addView(clear); if (screen != null) { addView(view); addView(fit); addView(choose) }
         }
         setContentView(FrameLayout(this).apply {
             setBackgroundColor(Color.BLACK)
@@ -167,6 +178,24 @@ class PadActivity : ComponentActivity() {
                 decoder?.stop(); decoder = null
             }
         })
+    }
+
+    private fun chooseDisplay(session: org.inkbridge.core.Session) {
+        val displays = session.displays()
+        if (displays.size < 2) return
+        val names = displays.map { "${it.name} · ${it.width}×${it.height}" }.toTypedArray()
+        android.app.AlertDialog.Builder(this)
+            .setTitle("Show which screen?")
+            .setSingleChoiceItems(names, displays.indexOfFirst { it.current }) { dialog, which ->
+                if (!displays[which].current) {
+                    pad.clearInk()
+                    runCatching { session.selectDisplay(which.toUInt()) }
+                }
+                dialog.dismiss()
+            }
+            .setNegativeButton("Cancel", null)
+            .setOnDismissListener { hideSystemBars() }
+            .show()
     }
 
     @Volatile private var reconnecting = false

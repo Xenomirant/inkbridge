@@ -24,8 +24,13 @@ const VIDEO_QUEUE: usize = 3;
 #[derive(Debug)]
 struct SessionState {
     video: Option<VideoPipeline>,
+    /// Where encoded frames go and the tablet's decoder limit, to start
+    /// the pipeline again on another display. `None` without video.
+    video_out: Option<(tokio::sync::mpsc::Sender<VideoChunk>, (u32, u32))>,
     /// Aspect (width / height) of the tablet's drawing area.
     aspect: f64,
+    /// The tablet's drawing area in its pixels.
+    viewport: (u32, u32),
 }
 
 /// Logs what the network did to the video every couple of seconds (debug
@@ -94,6 +99,8 @@ pub struct Host {
     pen: Sender<PenInput>,
     /// One tablet at a time (there is one pen): held for a session's life.
     session: Mutex<()>,
+    /// Bounds of the display being shown; the tablet can change it.
+    display: std::sync::Mutex<Region>,
     usb_tip_shown: std::sync::atomic::AtomicBool,
 }
 
@@ -119,6 +126,7 @@ impl Host {
             }
             other => other?,
         };
+        let display = std::sync::Mutex::new(config.region);
         Ok(Arc::new(Self {
             endpoint,
             identity,
@@ -126,6 +134,7 @@ impl Host {
             store: Mutex::new(store),
             pairing: Mutex::new(None),
             session: Mutex::new(()),
+            display,
             usb_tip_shown: std::sync::atomic::AtomicBool::new(false),
             pen,
         }))
@@ -293,12 +302,12 @@ impl Host {
                 } else {
                     vec![]
                 },
-                max_width: self.config.region.width,
-                max_height: self.config.region.height,
+                max_width: self.display().width,
+                max_height: self.display().height,
                 max_fps: 60,
                 pen: self.config.pen_features,
             },
-            region: self.config.region,
+            region: self.display(),
             transport,
         };
 
@@ -320,14 +329,21 @@ impl Host {
         // Video: only if both sides support it (codec negotiated).
         let mut session = SessionState {
             video: None,
+            video_out: None,
             aspect: f64::from(hello.screen_width.max(1)) / f64::from(hello.screen_height.max(1)),
+            viewport: (hello.screen_width, hello.screen_height),
         };
+        if hello.version.minor >= ib_protocol::DISPLAY_CHOICE_MINOR {
+            self.send_displays(&mut ctl).await?;
+        }
         let mut video_task = None;
         if settings.caps.negotiate_codec(&hello.caps).is_some() {
             let (tx, mut rx) = tokio::sync::mpsc::channel::<VideoChunk>(VIDEO_QUEUE);
-            match VideoPipeline::start(region, (hello.caps.max_width, hello.caps.max_height), tx) {
+            let client_max = (hello.caps.max_width, hello.caps.max_height);
+            match VideoPipeline::start(region, client_max, tx.clone()) {
                 Ok(p) => {
                     session.video = Some(p);
+                    session.video_out = Some((tx, client_max));
                     let conn = conn.clone();
                     video_task = Some(tokio::spawn(async move {
                         let mut stream = conn.open_video().await?;
@@ -374,6 +390,68 @@ impl Host {
         Ok(newly_paired.then_some(hello.device_name))
     }
 
+    fn display(&self) -> Region {
+        *self
+            .display
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Tells the tablet which displays it can choose from, if there is a choice.
+    async fn send_displays(&self, ctl: &mut ib_transport::Control) -> anyhow::Result<()> {
+        let all = crate::platform::displays();
+        if all.len() < 2 {
+            return Ok(());
+        }
+        let current = u8::try_from(crate::platform::current_display()).unwrap_or(0);
+        let displays = all
+            .into_iter()
+            .map(|d| ib_protocol::DisplayInfo {
+                name: d.name,
+                bounds: d.bounds,
+            })
+            .collect();
+        ctl.send(&ControlMessage::Displays { displays, current })
+            .await?;
+        Ok(())
+    }
+
+    /// The tablet chose another display: move the pen and the picture there.
+    async fn select_display(
+        &self,
+        ctl: &mut ib_transport::Control,
+        session: &mut SessionState,
+        index: usize,
+    ) -> anyhow::Result<()> {
+        let chosen = match crate::platform::switch_display(index) {
+            Ok(display) => display,
+            Err(e) => {
+                tracing::warn!("display not changed: {e:#}");
+                return self.send_displays(ctl).await;
+            }
+        };
+        tracing::info!(name = %chosen.name, bounds = ?chosen.bounds, "tablet chose a display");
+        *self
+            .display
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = chosen.bounds;
+        let _ = self.pen.send(PenInput::SetDisplay(chosen.id));
+        // The tablet learns the new bounds before the region inside them.
+        self.send_displays(ctl).await?;
+        // Capture is bound to a display: stop it before mapping the new
+        // region, then start again there.
+        session.video = None;
+        let (width, height) = session.viewport;
+        let region = self.apply_viewport(ctl, width, height).await?;
+        if let Some((out, client_max)) = &session.video_out {
+            match VideoPipeline::start(region, *client_max, out.clone()) {
+                Ok(p) => session.video = Some(p),
+                Err(e) => tracing::warn!("screen streaming unavailable: {e:#}"),
+            }
+        }
+        Ok(())
+    }
+
     /// Picks the desktop region for the tablet's current viewport and tells
     /// both the pen thread and the tablet.
     async fn apply_viewport(
@@ -382,7 +460,7 @@ impl Host {
         width: u32,
         height: u32,
     ) -> anyhow::Result<Region> {
-        let region = ib_geometry::region_for_viewport(self.config.region, width, height);
+        let region = ib_geometry::region_for_viewport(self.display(), width, height);
         tracing::info!(width, height, ?region, "tablet viewport");
         self.set_region(ctl, None, region).await?;
         Ok(region)
@@ -444,14 +522,14 @@ impl Host {
                 }
                 ControlMessage::Viewport { width, height } => {
                     session.aspect = f64::from(width.max(1)) / f64::from(height.max(1));
+                    session.viewport = (width, height);
                     let region = self.apply_viewport(ctl, width, height).await?;
                     if let Some(v) = &session.video {
                         v.set_region(region);
                     }
                 }
                 ControlMessage::RequestView(requested) => {
-                    let region =
-                        ib_geometry::clamp_view(self.config.region, requested, session.aspect);
+                    let region = ib_geometry::clamp_view(self.display(), requested, session.aspect);
                     tracing::info!(?requested, ?region, "tablet view");
                     self.set_region(ctl, Some(session), region).await?;
                 }
@@ -464,6 +542,10 @@ impl Host {
                     if let Some(v) = &session.video {
                         v.set_bitrate(kbps);
                     }
+                }
+                ControlMessage::SelectDisplay { index } => {
+                    self.select_display(ctl, session, usize::from(index))
+                        .await?;
                 }
                 ControlMessage::Goodbye => return Ok(()),
                 other => tracing::debug!(?other, "ignored control message"),
@@ -574,6 +656,162 @@ mod tests {
         .expect("the new connection waited for the old session");
         rejoined.unwrap();
         old.closed().await;
+    }
+
+    /// Apps from before the display menu stop reading the control stream at
+    /// a message they don't know, so they must not get the display list.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_older_app_is_not_sent_the_display_list() {
+        let (identity, addr, offer) = host().await;
+        let endpoint = ib_transport::ClientEndpoint::new(Identity::generate().unwrap()).unwrap();
+        let conn = endpoint
+            .connect(addr, identity.fingerprint())
+            .await
+            .unwrap();
+        let mut ctl = conn.open_control().await.unwrap();
+        let hello = ib_protocol::ClientHello {
+            version: ib_protocol::ProtocolVersion {
+                major: ib_protocol::PROTOCOL_VERSION.major,
+                minor: ib_protocol::DISPLAY_CHOICE_MINOR - 1,
+            },
+            device_name: "Old tablet".into(),
+            caps: Capabilities {
+                video_codecs: vec![],
+                max_width: 1920,
+                max_height: 1080,
+                max_fps: 60,
+                pen: PenFeatures::default(),
+            },
+            screen_width: 1920,
+            screen_height: 1200,
+        };
+        ib_session::client_handshake(&mut ctl, hello, Some((offer.secret.0, "Old tablet".into())))
+            .await
+            .unwrap();
+        let quiet = std::time::Duration::from_millis(300);
+        while let Ok(msg) = tokio::time::timeout(quiet, ctl.recv()).await {
+            assert!(
+                !matches!(msg.unwrap(), ControlMessage::Displays { .. }),
+                "display list sent to an app that can't read it"
+            );
+        }
+    }
+
+    /// Reads control messages until one matches.
+    async fn wait_for<T>(
+        ctl: &mut ib_transport::Control,
+        mut pick: impl FnMut(ControlMessage) -> Option<T>,
+    ) -> T {
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            loop {
+                if let Some(found) = pick(ctl.recv().await.unwrap()) {
+                    return found;
+                }
+            }
+        })
+        .await
+        .expect("the host did not answer")
+    }
+
+    /// The tablet's display menu, against the real screens: the picture and
+    /// the mapped region move to the second display and back.
+    ///
+    /// Needs two displays and the Screen Recording permission (macOS only
+    /// so far). Run with:
+    /// `cargo test -p ib-host --lib the_tablet_switches_displays -- --ignored --nocapture`
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore = "needs two real displays and the Screen Recording permission"]
+    async fn the_tablet_switches_displays() {
+        let all = crate::platform::displays();
+        assert!(all.len() >= 2, "connect a second display");
+        let identity = Identity::generate().unwrap();
+        let config = HostConfig {
+            host_name: "Host".into(),
+            bind: "127.0.0.1:0".parse().unwrap(),
+            region: all[0].bounds,
+            pen_features: PenFeatures::default(),
+            video: true,
+        };
+        let (pen, pen_rx) = std::sync::mpsc::channel();
+        let host = Host::new(identity.clone(), config, PairingStore::in_memory(), pen).unwrap();
+        let addr = host.local_addr().unwrap();
+        let offer = host.open_pairing().await.unwrap();
+        tokio::spawn(host.run(|_| {}));
+
+        let endpoint = ib_transport::ClientEndpoint::new(Identity::generate().unwrap()).unwrap();
+        let conn = endpoint
+            .connect(addr, identity.fingerprint())
+            .await
+            .unwrap();
+        let mut ctl = conn.open_control().await.unwrap();
+        let hello = ib_protocol::ClientHello {
+            version: ib_protocol::PROTOCOL_VERSION,
+            device_name: "Tablet".into(),
+            caps: Capabilities {
+                video_codecs: vec![VideoCodec::H264],
+                max_width: 1920,
+                max_height: 1088,
+                max_fps: 60,
+                pen: PenFeatures::default(),
+            },
+            screen_width: 1920,
+            screen_height: 1200,
+        };
+        ib_session::client_handshake(&mut ctl, hello, Some((offer.secret.0, "Tablet".into())))
+            .await
+            .unwrap();
+        let listed = wait_for(&mut ctl, |m| match m {
+            ControlMessage::Displays { displays, current } => Some((displays, current)),
+            _ => None,
+        })
+        .await;
+        assert_eq!((listed.0.len(), listed.1), (all.len(), 0));
+
+        let mut video = conn.accept_video().await.unwrap();
+        let first = video.recv().await.unwrap();
+        println!("display 1: picture {}x{}", first.width, first.height);
+
+        for (index, display) in [(1u8, &all[1]), (0u8, &all[0])] {
+            ctl.send(&ControlMessage::SelectDisplay { index })
+                .await
+                .unwrap();
+            let current = wait_for(&mut ctl, |m| match m {
+                ControlMessage::Displays { current, .. } => Some(current),
+                _ => None,
+            })
+            .await;
+            assert_eq!(current, index);
+            let region = wait_for(&mut ctl, |m| match m {
+                ControlMessage::SetRegion(r) => Some(r),
+                _ => None,
+            })
+            .await;
+            assert!(
+                region.width <= display.bounds.width && region.height <= display.bounds.height,
+                "{region:?} is not on {:?}",
+                display.bounds
+            );
+            // The pen follows, and the picture restarts with a keyframe.
+            assert!(
+                pen_rx
+                    .try_iter()
+                    .any(|i| matches!(i, PenInput::SetDisplay(id) if id == display.id))
+            );
+            let key = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+                loop {
+                    let chunk = video.recv().await.unwrap();
+                    if chunk.kind == ib_protocol::FrameKind::Key {
+                        return chunk;
+                    }
+                }
+            })
+            .await
+            .expect("no picture from the new display");
+            println!(
+                "{}: region {}x{}, picture {}x{}",
+                display.name, region.width, region.height, key.width, key.height
+            );
+        }
     }
 
     /// The secret in the QR code works once, whoever uses it: a tablet that

@@ -103,6 +103,27 @@ mod tests {
         }
     }
 
+    #[test]
+    fn display_messages_round_trip() {
+        let list = ControlMessage::Displays {
+            displays: vec![crate::DisplayInfo {
+                name: "External display".into(),
+                bounds: crate::Region {
+                    x: 0,
+                    y: 0,
+                    width: 2560,
+                    height: 1440,
+                },
+            }],
+            current: 0,
+        };
+        let choice = ControlMessage::SelectDisplay { index: 1 };
+        for msg in [list, choice] {
+            let bytes = encode(&msg).unwrap();
+            assert_eq!(decode::<ControlMessage>(&bytes).unwrap(), msg);
+        }
+    }
+
     /// A full batch must fit in a single QUIC datagram (conservative 1200 B).
     #[test]
     fn full_pen_batch_fits_in_a_datagram() {

@@ -26,7 +26,11 @@ impl std::fmt::Display for ProtocolVersion {
 }
 
 /// The version implemented by this build.
-pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion { major: 0, minor: 1 };
+pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion { major: 0, minor: 2 };
+
+/// First minor version whose clients understand `Displays` and can send
+/// `SelectDisplay`. Older clients stop reading at a message they don't know.
+pub const DISPLAY_CHOICE_MINOR: u16 = 2;
 
 #[cfg(test)]
 mod tests {
