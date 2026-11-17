@@ -17,3 +17,6 @@ apps/ios/build/
 host-run.log
 run-fake-tablet.cmd
 apps/android/.kotlin/
+
+# personal files for the Linux validation kit (VPN account, notes)
+tools/linux-validation/personal/

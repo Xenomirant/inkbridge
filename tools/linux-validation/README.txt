@@ -5,6 +5,7 @@ Checks the Linux host on a real desktop: hardware video encoding, Wayland
 screen sharing, the pen as a mouse, and the pen with pressure.
 
 1. Boot the PC from the Ubuntu USB stick and choose "Try Ubuntu".
+   Connect to the network as usual (cable or Wi-Fi).
 2. Open the Files app, open the USB stick, open this "inkbridge" folder.
    (It may also be at /cdrom/inkbridge.)
 3. Right-click inside the folder → "Open in Terminal", then type:
@@ -18,3 +19,9 @@ screen sharing, the pen as a mouse, and the pen with pressure.
 Everything is saved to a results-<date> folder here (or in your home folder
 if the stick can't be written; the script tells you where). Nothing is sent
 anywhere. A live session forgets all changes when you shut down.
+
+Optional, to work with Claude Code in the live session:
+
+       bash vpn.sh          VPN (needed for Claude); type your password
+       bash dev-setup.sh    Claude Code, Rust and the source in ~/inkbridge
+       cd ~/inkbridge && claude
