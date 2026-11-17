@@ -1,10 +1,11 @@
 //! Screen streaming pipeline: capture → scale → encode on a dedicated
 //! thread, handing encoded chunks to the async sender.
 //!
-//! The video stream is reliable and ordered, so a delta frame may never be
-//! dropped on its own: if the network falls behind (the outgoing queue is
-//! full), frames are skipped *and the next one is forced to be a keyframe*,
-//! which resynchronises the decoder instead of corrupting the picture.
+//! The video stream is reliable and ordered, so an encoded delta frame may
+//! never be dropped on its own. If the network falls behind (the outgoing
+//! queue is full), frames are skipped *before* they are encoded, so the
+//! decoder stays in sync and no keyframe is needed; the bitrate is lowered
+//! and the newest picture is sent as soon as there is room.
 
 use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
 use std::thread::JoinHandle;
@@ -331,6 +332,10 @@ impl Rate {
     }
 }
 
+/// The bitrate is lowered at most this often while the network is behind,
+/// so one stall doesn't take it straight to the minimum.
+const BACKOFF_INTERVAL: Duration = Duration::from_millis(250);
+
 /// Consecutive hardware failures before falling back to software for good.
 const HARDWARE_RETRIES: u32 = 3;
 /// Bitrate ceiling for the hardware path (kbit/s).
@@ -387,6 +392,11 @@ struct Pipeline {
     frame_no: u64,
     /// Last captured frame, re-encoded when a keyframe is needed on a static screen.
     last: Option<Frame>,
+    /// The encoder skipped the last frame: encode it again when the screen
+    /// stays still, so the tablet ends up with the current picture.
+    resend: bool,
+    /// When the bitrate was last lowered because the network was behind.
+    last_cut: Option<std::time::Instant>,
 }
 
 impl Pipeline {
@@ -409,6 +419,8 @@ impl Pipeline {
             force_key: true,
             frame_no: 0,
             last: None,
+            resend: false,
+            last_cut: None,
         })
     }
 
@@ -436,7 +448,7 @@ impl Pipeline {
     fn next_input(&mut self) -> anyhow::Result<Option<Frame>> {
         Ok(match self.source.next_frame(Duration::from_millis(50))? {
             Some(f) => Some(f),
-            None if self.force_key => self.last.clone(),
+            None if self.force_key || self.resend => self.last.clone(),
             None => None,
         })
     }
@@ -481,6 +493,23 @@ impl Pipeline {
         frame: Frame,
         out: &tokio::sync::mpsc::Sender<VideoChunk>,
     ) -> anyhow::Result<Flow> {
+        // Network behind: don't encode a frame that can't be sent. The
+        // decoder stays in sync, so the next frame can be a normal one.
+        if out.capacity() == 0 {
+            if out.is_closed() {
+                return Ok(Flow::Stop);
+            }
+            if self
+                .last_cut
+                .is_none_or(|t| t.elapsed() >= BACKOFF_INTERVAL)
+            {
+                self.rate.on_skip(self.rate.applied);
+                self.last_cut = Some(std::time::Instant::now());
+            }
+            self.last = Some(frame);
+            self.resend = true;
+            return Ok(Flow::Continue);
+        }
         let enc = self.encoder.as_mut().expect("ensure_encoder ran");
         #[cfg(all(target_os = "linux", feature = "vaapi"))]
         let was_vaapi = enc.name() == "vaapi";
@@ -496,7 +525,14 @@ impl Pipeline {
         let encoded = match enc.encode(&input, self.force_key) {
             Ok(e) => {
                 self.failures = 0;
+                self.resend = false;
                 e
+            }
+            Err(ib_encode::EncodeError::Dropped) => {
+                tracing::trace!("the encoder skipped a frame to hold the bitrate");
+                self.last = Some(frame);
+                self.resend = true;
+                return Ok(Flow::Continue);
             }
             Err(e) => {
                 // Rebuild the encoder; after repeated failures, use software.
@@ -536,8 +572,8 @@ impl Pipeline {
         );
         match out.try_send(chunk) {
             Ok(()) => self.force_key = false,
-            // Network behind: skip, lower the bitrate, and resync with a
-            // keyframe next time.
+            // Can't happen after the check above (this thread is the only
+            // sender); if it does, the lost frame needs a keyframe after it.
             Err(TrySendError::Full(_)) => {
                 self.force_key = true;
                 self.rate.on_skip(self.rate.applied);
@@ -621,6 +657,40 @@ mod tests {
         }
         assert!(got_key, "keyframe request must produce a keyframe");
         drop(p);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_slow_network_skips_frames_before_encoding() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+        let region = Region {
+            x: 0,
+            y: 0,
+            width: 128,
+            height: 80,
+        };
+        let p = VideoPipeline::start_with(
+            Box::new(FakeScreenSource::default()),
+            None,
+            region,
+            (1920, 1080),
+            tx,
+        )
+        .unwrap();
+        // Read slowly: the queue is full most of the time.
+        let mut chunks = Vec::new();
+        for _ in 0..12 {
+            tokio::time::sleep(Duration::from_millis(30)).await;
+            chunks.push(rx.recv().await.unwrap());
+        }
+        drop(p);
+        assert_eq!(chunks[0].kind, FrameKind::Key);
+        // Every encoded frame reaches the tablet: frames are skipped before
+        // encoding, so the stream has no gap that would need a keyframe.
+        // (The software encoder may still choose a keyframe by itself when
+        // the fake screen changes completely.)
+        for (i, c) in chunks.iter().enumerate().skip(1) {
+            assert_eq!(c.frame_no, chunks[i - 1].frame_no + 1, "chunk {i}");
+        }
     }
 
     #[test]

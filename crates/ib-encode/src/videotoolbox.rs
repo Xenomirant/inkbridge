@@ -5,6 +5,11 @@
 //! reordering, no periodic keyframes. `encode` submits one frame and waits
 //! for its output, so nothing queues inside the encoder (ADR-0005).
 //!
+//! Low-latency rate control holds the bitrate by skipping frames when the
+//! picture changes faster than the bitrate allows. `encode` reports that as
+//! [`EncodeError::Dropped`]; the stream stays valid and the caller sends the
+//! frame again later.
+//!
 //! VideoToolbox emits AVCC (length-prefixed NAL units, parameter sets out of
 //! band). The tablet's decoder wants Annex B with SPS and PPS in front of
 //! every keyframe, so the output is converted here.
@@ -48,8 +53,9 @@ const KEYFRAME_INTERVAL: i32 = 36_000;
 /// How long one frame may take before the encoder counts as stuck.
 const ENCODE_TIMEOUT: Duration = Duration::from_secs(2);
 
-/// One encoded frame as Annex B, and whether it is a keyframe.
-type Output = Result<(Vec<u8>, bool), String>;
+/// One encoded frame as Annex B and whether it is a keyframe, or `None`
+/// when the encoder skipped the frame to hold the bitrate.
+type Output = Result<Option<(Vec<u8>, bool)>, String>;
 
 /// Where the output callback leaves the frame for `encode` to pick up.
 #[derive(Default)]
@@ -141,9 +147,9 @@ fn convert(sample: &CMSampleBuffer) -> Output {
     if key && !types.contains(&NAL_SPS) {
         let mut data = sets;
         data.extend_from_slice(&body);
-        return Ok((data, true));
+        return Ok(Some((data, true)));
     }
-    Ok((body, key))
+    Ok(Some((body, key)))
 }
 
 /// Called by VideoToolbox when a frame is done (on one of its threads).
@@ -160,9 +166,7 @@ unsafe extern "C-unwind" fn on_output(
     // SAFETY: VideoToolbox passes either null or a valid sample buffer.
     let output = match unsafe { sample.as_ref() } {
         _ if status != 0 => Err(format!("VideoToolbox error {status}")),
-        None if flags.contains(VTEncodeInfoFlags::FrameDropped) => {
-            Err("the encoder dropped the frame".into())
-        }
+        None if flags.contains(VTEncodeInfoFlags::FrameDropped) => Ok(None),
         None => Err("the encoder returned no data".into()),
         Some(sample) => convert(sample),
     };
@@ -467,7 +471,8 @@ impl VideoEncoder for VtEncoder {
         let (data, key) = slot
             .take()
             .ok_or_else(stuck)?
-            .map_err(EncodeError::Failed)?;
+            .map_err(EncodeError::Failed)?
+            .ok_or(EncodeError::Dropped)?;
         Ok(EncodedFrame {
             kind: if key {
                 FrameKind::Key
@@ -580,6 +585,43 @@ mod tests {
             height,
             data: FrameData::Gpu(GpuFrame { buffer }),
         }
+    }
+
+    /// A bitrate far too low for the content makes the encoder skip frames.
+    /// That must be reported as `Dropped`, and the frames that do come out
+    /// must still decode. Needs a hardware H.264 encoder:
+    /// `cargo test -p ib-encode -- --ignored --nocapture skipped_frames_are_not_failures`
+    #[test]
+    #[ignore = "needs a hardware H.264 encoder"]
+    fn skipped_frames_are_not_failures() {
+        let config = EncoderConfig {
+            codec: VideoCodec::H264,
+            width: 1680,
+            height: 1088,
+            fps: 60,
+            bitrate_kbps: 300,
+        };
+        let mut encoder = VtEncoder::new(config).expect("hardware encoder");
+        let mut decoder = Decoder::new().unwrap();
+        let (mut dropped, mut decoded) = (0, 0);
+        for i in 0..90u32 {
+            // The edge jumps across the picture: a lot changes every frame.
+            let frame = split_frame(1680, 1088, (i * 97) % 700);
+            let frame = Frame {
+                capture_t_us: u64::from(i) * 16_667,
+                ..frame
+            };
+            match encoder.encode(&frame, i == 0) {
+                Ok(out) => {
+                    assert!(decoder.decode(&out.data).expect("valid H.264").is_some());
+                    decoded += 1;
+                }
+                Err(EncodeError::Dropped) => dropped += 1,
+                Err(e) => panic!("frame {i}: {e}"),
+            }
+        }
+        println!("{decoded} encoded, {dropped} skipped");
+        assert!(decoded > 0);
     }
 
     /// Encodes synthetic frames on the real hardware encoder, scaled down,

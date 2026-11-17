@@ -39,6 +39,10 @@ pub enum EncodeError {
     UnsupportedFrame(String),
     #[error("encoding failed: {0}")]
     Failed(String),
+    /// The encoder skipped this frame to hold the bitrate. The stream is
+    /// intact: send the frame again later, don't rebuild the encoder.
+    #[error("the encoder skipped the frame to hold the bitrate")]
+    Dropped,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -39,7 +39,9 @@ Implemented on the MacBook (Apple silicon, macOS 27), tested with the TB331FC ov
   to CPU capture + openh264 when no hardware encoder is available.
   Encode time for the full 3420x2214 screen at 1680x1088: about 6 ms (median) against 55 ms with
   openh264. Output verified with an independent decoder (`mac_pipeline_probe`).
-  **Not yet seen on the tablet**: check the picture and the latency overlay there.
+  On the tablet over campus Wi-Fi (jittery, 7-180 ms round trip): about 60 ms capture-to-screen
+  (median) against 258 ms with openh264, 57 fps while the screen moves. The p95 is far higher
+  (0.2-2 s) and follows the Wi-Fi, not the encoder. To repeat on a quiet network for `docs/latency.md`.
 - **Permissions:** asked when needed, with an explanation: Screen Recording when a tablet first
   connects, Accessibility at the first pen touch.
 - **Bindings:** the `objc2` crate family (generated from Apple's headers) for all three backends.
@@ -62,6 +64,9 @@ Still to do for M4:
 - Possible brief flicker on the tablet after switching the View (zoom) mode.
 - The host never forgets a paired tablet (`paired-devices.txt` has no expiry). The tablet side expires
   its list; the host side matters more, because a paired tablet can inject input.
+- When the Wi-Fi stalls, the picture freezes until the reliable video stream catches up (the p95
+  above). The pipeline now skips frames before encoding instead of sending keyframes, but a stall of
+  the link itself still shows.
 - The app doesn't reconnect by itself when the host restarts; the user has to tap Connect again.
 - `cargo deny check` hasn't been run on the Mac (not installed there), so the licences of the `objc2`
   crates are unchecked.
