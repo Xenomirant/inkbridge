@@ -116,14 +116,55 @@ impl Host {
     }
 
     async fn accept_loop(&self, on_paired: &(impl Fn(&str) + Send + Sync)) {
-        while let Some(incoming) = self.endpoint.accept().await {
-            match incoming {
-                Ok(conn) => {
-                    let _slot = self.session.lock().await;
-                    self.run_session(&conn, TransportKind::Wifi, on_paired)
-                        .await;
+        // One accept is kept across sessions: dropping it part-way would
+        // drop the tablet whose handshake it is carrying.
+        let mut accept = Box::pin(self.endpoint.accept());
+        // A tablet that connected while another session was running.
+        let mut waiting: Option<Connection> = None;
+        loop {
+            let conn = if let Some(conn) = waiting.take() {
+                conn
+            } else {
+                let Some(incoming) = accept.as_mut().await else {
+                    return;
+                };
+                accept.set(self.endpoint.accept());
+                match incoming {
+                    Ok(conn) => conn,
+                    Err(e) => {
+                        tracing::warn!("connection attempt failed: {e}");
+                        continue;
+                    }
                 }
-                Err(e) => tracing::warn!("connection attempt failed: {e}"),
+            };
+            let _slot = self.session.lock().await;
+            let session = self.run_session(&conn, TransportKind::Wifi, on_paired);
+            tokio::pin!(session);
+            loop {
+                let incoming = tokio::select! {
+                    () = &mut session => break,
+                    incoming = accept.as_mut() => incoming,
+                };
+                let Some(incoming) = incoming else {
+                    session.await;
+                    return;
+                };
+                accept.set(self.endpoint.accept());
+                match incoming {
+                    Ok(new) => {
+                        // The same tablet again: its old session is dead
+                        // (app restarted, network changed) even if the idle
+                        // timeout hasn't noticed yet. Don't make it wait.
+                        if new.peer_fingerprint() == conn.peer_fingerprint() {
+                            tracing::info!("the tablet reconnected, ending its previous session");
+                            conn.close("replaced by a new connection");
+                        }
+                        if let Some(old) = waiting.replace(new) {
+                            old.close("another tablet is waiting");
+                        }
+                    }
+                    Err(e) => tracing::warn!("connection attempt failed: {e}"),
+                }
             }
         }
     }
@@ -415,6 +456,74 @@ fn is_probably_tether(ip: std::net::Ipv4Addr) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A tablet's handshake with the host, as the app does it.
+    async fn join(
+        conn: &Connection,
+        secret: Option<PairingSecret>,
+    ) -> Result<ib_protocol::HostHello, ib_session::SessionError> {
+        let mut ctl = conn.open_control().await.unwrap();
+        let hello = ib_protocol::ClientHello {
+            version: ib_protocol::PROTOCOL_VERSION,
+            device_name: "Tablet".into(),
+            caps: Capabilities {
+                video_codecs: vec![],
+                max_width: 1920,
+                max_height: 1080,
+                max_fps: 60,
+                pen: PenFeatures::default(),
+            },
+            screen_width: 1920,
+            screen_height: 1200,
+        };
+        let r =
+            ib_session::client_handshake(&mut ctl, hello, secret.map(|s| (s.0, "Tablet".into())))
+                .await;
+        // The control stream must outlive the handshake.
+        std::mem::forget(ctl);
+        r
+    }
+
+    /// An app that was killed leaves its session open on the host until the
+    /// idle timeout. The same tablet connecting again must get in at once.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_reconnecting_tablet_replaces_its_dead_session() {
+        let identity = Identity::generate().unwrap();
+        let config = HostConfig {
+            host_name: "Host".into(),
+            bind: "127.0.0.1:0".parse().unwrap(),
+            region: Region {
+                x: 0,
+                y: 0,
+                width: 1920,
+                height: 1080,
+            },
+            pen_features: PenFeatures::default(),
+            video: false,
+        };
+        let (pen, _pen_rx) = std::sync::mpsc::channel();
+        let host = Host::new(identity.clone(), config, PairingStore::in_memory(), pen).unwrap();
+        let addr = host.local_addr().unwrap();
+        let offer = host.open_pairing().await.unwrap();
+        let server = tokio::spawn(host.clone().run(|_| {}));
+
+        let tablet = Identity::generate().unwrap();
+        let first = ib_transport::ClientEndpoint::new(tablet.clone()).unwrap();
+        let old = first.connect(addr, identity.fingerprint()).await.unwrap();
+        join(&old, Some(offer.secret)).await.unwrap();
+
+        // The first session stays open; the tablet connects again.
+        let second = ib_transport::ClientEndpoint::new(tablet).unwrap();
+        let rejoined = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            let conn = second.connect(addr, identity.fingerprint()).await.unwrap();
+            join(&conn, None).await.map(|_| conn)
+        })
+        .await
+        .expect("the new connection waited for the old session");
+        rejoined.unwrap();
+        old.closed().await;
+        server.abort();
+    }
 
     #[test]
     fn tether_addresses_sort_first() {
