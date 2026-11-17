@@ -1,6 +1,7 @@
 package org.inkbridge.android
 
 import android.media.MediaCodec
+import android.media.MediaCodecInfo
 import android.media.MediaCodecList
 import android.media.MediaFormat
 import android.util.Log
@@ -27,6 +28,12 @@ class VideoDecoder(private val session: Session, private val surface: Surface) {
     private var height = 0
     private val info = MediaCodec.BufferInfo()
 
+    // Time each frame spends in the decoder (logged for latency work).
+    private val queuedAt = HashMap<Long, Long>()
+    private var decodeCount = 0
+    private var decodeSum = 0.0
+    private var decodeMax = 0.0
+
     /** Frames given to the decoder that it hasn't returned yet. */
     private var pending = 0
 
@@ -46,7 +53,9 @@ class VideoDecoder(private val session: Session, private val surface: Surface) {
     private fun loop() {
         session.requestKeyframe() // start from a clean picture
         while (running) {
-            // While the decoder still holds a frame, come back quickly to show it.
+            // While the decoder still holds a frame, come back quickly to
+            // show it: otherwise it would wait for the next frame to arrive,
+            // which on a still screen can be much later.
             val frame = session.nextVideoFrame(if (pending > 0) 4u else 100u)
             try {
                 if (frame == null) { drain(0); continue }
@@ -74,9 +83,7 @@ class VideoDecoder(private val session: Session, private val surface: Surface) {
         }
         val flags = if (frame.keyframe) MediaCodec.BUFFER_FLAG_KEY_FRAME else 0
         if (queue(frame.data, frame.captureTUs.toLong(), flags)) pending++
-        // Wait for this frame to come out, so it is shown now and not when
-        // the next one arrives (which on a still screen can be much later).
-        drain(if (pending > 0) OUTPUT_WAIT_US else 0)
+        drain(0)
     }
 
     private fun create(w: Int, h: Int): MediaCodec {
@@ -87,8 +94,25 @@ class VideoDecoder(private val session: Session, private val surface: Surface) {
             // told the picture size, and refuse to start for taller pictures.
             setInteger(MediaFormat.KEY_MAX_WIDTH, w)
             setInteger(MediaFormat.KEY_MAX_HEIGHT, h)
+            // Run the decoder at full speed instead of pacing it to the
+            // frame rate, and hand frames out in decode order at once
+            // (the stream has no reordering). The vendor keys are Qualcomm's;
+            // other decoders ignore them.
+            setInteger(MediaFormat.KEY_OPERATING_RATE, Short.MAX_VALUE.toInt())
+            setInteger("vendor.qti-ext-dec-low-latency.enable", 1)
+            setInteger("vendor.qti-ext-dec-picture-order.enable", 1)
         }
-        val decoder = MediaCodec.createDecoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
+        // Some chips have a separate low-latency decoder that the default
+        // choice skips; ask for one that supports the feature.
+        val lowLatency = runCatching {
+            val wanted = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, w, h).apply {
+                setFeatureEnabled(MediaCodecInfo.CodecCapabilities.FEATURE_LowLatency, true)
+            }
+            MediaCodecList(MediaCodecList.REGULAR_CODECS).findDecoderForFormat(wanted)
+        }.getOrNull()
+        val decoder = if (lowLatency != null) MediaCodec.createByCodecName(lowLatency)
+        else MediaCodec.createDecoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
+        Log.i(TAG, "decoder ${decoder.name} for ${w}x$h")
         try {
             decoder.configure(format, surface, null, 0)
             decoder.start()
@@ -108,6 +132,7 @@ class VideoDecoder(private val session: Session, private val surface: Surface) {
         buf.clear()
         buf.put(data)
         c.queueInputBuffer(index, 0, data.size, ptsUs, flags)
+        if (flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG == 0) queuedAt[ptsUs] = System.nanoTime()
         return true
     }
 
@@ -125,6 +150,15 @@ class VideoDecoder(private val session: Session, private val surface: Surface) {
             c.releaseOutputBuffer(index, true)
             // presentationTimeUs carries the computer's capture time.
             session.framePresented(info.presentationTimeUs.toULong())
+            queuedAt.remove(info.presentationTimeUs)?.let { t ->
+                val ms = (System.nanoTime() - t) / 1e6
+                decodeSum += ms; if (ms > decodeMax) decodeMax = ms
+                if (++decodeCount == 120) {
+                    Log.d(TAG, "decode %.1f ms avg, %.1f max over 120 frames".format(decodeSum / 120, decodeMax))
+                    decodeCount = 0; decodeSum = 0.0; decodeMax = 0.0
+                }
+            }
+            if (queuedAt.size > 64) queuedAt.clear()
             if (pending > 0) pending--
             wait = 0
         }
@@ -161,9 +195,6 @@ class VideoDecoder(private val session: Session, private val surface: Surface) {
         nals.fold(ByteArray(0)) { acc, n -> acc + d.copyOfRange(n.start, n.end) }
 
     companion object {
-        /** Longest wait for a frame to come out of the decoder (µs). */
-        private const val OUTPUT_WAIT_US = 25_000L
-
         /**
          * The screen size plus the largest picture this device's H.264
          * decoder accepts, which the computer must not exceed. Many tablets

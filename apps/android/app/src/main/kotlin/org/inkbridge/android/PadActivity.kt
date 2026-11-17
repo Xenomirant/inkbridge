@@ -34,6 +34,7 @@ class PadActivity : ComponentActivity() {
             .createWifiLock(WifiManager.WIFI_MODE_FULL_LOW_LATENCY, "inkbridge:pad")
             .apply { setReferenceCounted(false) }
     }
+    private var ticks = 0
     private val ticker = object : Runnable {
         override fun run() {
             val s = SessionHolder.session
@@ -53,6 +54,7 @@ class PadActivity : ComponentActivity() {
             } else {
                 "${host.name} · ${"%.1f".format(s.rttUs().toDouble() / 1000.0)} ms"
             }
+            if (++ticks % 8 == 0) android.util.Log.d("Inkbridge", info.text.toString().substringAfter(" · "))
             // Fast enough that the area follows a rotation almost at once.
             info.postDelayed(this, 250)
         }
