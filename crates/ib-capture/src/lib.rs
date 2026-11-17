@@ -13,6 +13,10 @@
 mod pipewire;
 #[cfg(all(target_os = "linux", feature = "wayland"))]
 pub use pipewire::PipeWireScreenSource;
+#[cfg(target_os = "macos")]
+mod macos;
+#[cfg(target_os = "macos")]
+pub use macos::MacScreenSource;
 #[cfg(windows)]
 mod windows;
 #[cfg(target_os = "linux")]
@@ -116,10 +120,14 @@ pub fn platform_source() -> Result<Box<dyn ScreenSource>, CaptureError> {
         }
         Ok(Box::new(X11ScreenSource::connect()?))
     }
-    #[cfg(not(any(windows, target_os = "linux")))]
+    #[cfg(target_os = "macos")]
+    {
+        Ok(Box::new(MacScreenSource::new()?))
+    }
+    #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
     {
         Err(CaptureError::Unavailable(
-            "no screen capture backend for this OS yet (macOS in M4)".into(),
+            "no screen capture backend for this OS".into(),
         ))
     }
 }

@@ -26,6 +26,18 @@ pipewire = { workspace = true, optional = true }
 ib-portal = { workspace = true, optional = true }
 tracing = { workspace = true, optional = true }
 
+[target.'cfg(target_os = "macos")'.dependencies]
+ib-clock.workspace = true
+objc2.workspace = true
+objc2-foundation.workspace = true
+objc2-core-foundation.workspace = true
+objc2-core-graphics.workspace = true
+objc2-screen-capture-kit.workspace = true
+objc2-core-media.workspace = true
+objc2-core-video.workspace = true
+block2.workspace = true
+dispatch2.workspace = true
+
 [target.'cfg(windows)'.dependencies]
 windows-capture.workspace = true
 windows = { workspace = true, features = [
