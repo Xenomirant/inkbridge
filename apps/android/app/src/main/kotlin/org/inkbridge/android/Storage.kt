@@ -4,9 +4,10 @@ import android.content.Context
 import android.util.Base64
 import org.inkbridge.core.DeviceIdentity
 import org.inkbridge.core.generateIdentity
+import org.inkbridge.core.parsePairingCode
 
 /**
- * App-private persistence: this tablet's identity and the computer it is
+ * App-private persistence: this tablet's identity and the computers it is
  * paired with. Stored in private app storage (not readable by other apps;
  * backups are disabled in the manifest).
  */
@@ -23,14 +24,35 @@ class Storage(context: Context) {
         return id
     }
 
-    /** The pairing code of the computer this tablet is paired with, if any. */
-    var pairedCode: String?
-        get() = prefs.getString(KEY_CODE, null)
-        set(v) = prefs.edit().putString(KEY_CODE, v).apply()
+    /**
+     * Paired computers, most recently used first. Pairings unused for
+     * [PairedHosts.EXPIRY_MS] are dropped here.
+     */
+    fun hosts(nowMs: Long = System.currentTimeMillis()): List<PairedHost> {
+        val stored = prefs.getString(KEY_HOSTS, null)?.let(PairedHosts::decode) ?: migrate(nowMs)
+        val current = PairedHosts.current(stored, nowMs)
+        if (current != stored) save(current)
+        return current
+    }
 
-    var pairedName: String?
-        get() = prefs.getString(KEY_NAME, null)
-        set(v) = prefs.edit().putString(KEY_NAME, v).apply()
+    /** Records a successful pairing or connection to a computer. */
+    fun remember(code: String, name: String, nowMs: Long = System.currentTimeMillis()) {
+        val fingerprint = runCatching { parsePairingCode(code).hostFingerprint }.getOrNull() ?: return
+        save(PairedHosts.remember(hosts(nowMs), PairedHost(code, name, fingerprint, nowMs)))
+    }
+
+    fun forget(fingerprint: String) = save(PairedHosts.forget(hosts(), fingerprint))
+
+    private fun save(hosts: List<PairedHost>) =
+        prefs.edit().putString(KEY_HOSTS, PairedHosts.encode(hosts)).apply()
+
+    /** Versions before the list kept a single pairing: carry it over. */
+    private fun migrate(nowMs: Long): List<PairedHost> {
+        val code = prefs.getString(KEY_CODE, null) ?: return emptyList()
+        val fingerprint = runCatching { parsePairingCode(code).hostFingerprint }.getOrNull() ?: return emptyList()
+        val name = prefs.getString(KEY_NAME, null) ?: "computer"
+        return listOf(PairedHost(code, name, fingerprint, nowMs))
+    }
 
     private fun encode(b: ByteArray) = Base64.encodeToString(b, Base64.NO_WRAP)
     private fun decode(s: String) = Base64.decode(s, Base64.NO_WRAP)
@@ -40,5 +62,6 @@ class Storage(context: Context) {
         const val KEY_KEY = "identity.key"
         const val KEY_CODE = "paired.code"
         const val KEY_NAME = "paired.name"
+        const val KEY_HOSTS = "paired.hosts"
     }
 }

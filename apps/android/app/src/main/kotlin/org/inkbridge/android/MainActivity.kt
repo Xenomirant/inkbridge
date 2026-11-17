@@ -8,6 +8,7 @@ import android.view.Gravity
 import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.TextView
+import android.app.AlertDialog
 import androidx.activity.ComponentActivity
 import androidx.activity.result.contract.ActivityResultContracts
 import org.inkbridge.core.InkbridgeException
@@ -16,12 +17,12 @@ import org.inkbridge.core.coreVersion
 import org.inkbridge.core.parsePairingCode
 import kotlin.concurrent.thread
 
-/** Home screen: pair by QR code, reconnect to the paired computer. */
+/** Home screen: pair by QR code, reconnect to a paired computer. */
 class MainActivity : ComponentActivity() {
 
     private lateinit var storage: Storage
     private lateinit var status: TextView
-    private lateinit var reconnect: Button
+    private lateinit var hostList: LinearLayout
     private var busy = false
 
     private val scan = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { r ->
@@ -55,18 +56,22 @@ class MainActivity : ComponentActivity() {
     @Volatile private var usbWatching = false
 
     /**
-     * USB: while this screen is open, wait for the paired computer to dial in
+     * USB: while this screen is open, wait for a paired computer to dial in
      * over the tethering link (it dials the tablet: no firewall setup on the
      * computer). Connects without a tap as soon as the cable link is up.
+     * The listener accepts one computer at a time, so it takes turns
+     * between the paired ones.
      */
     private fun startUsbWatcher() {
-        val code = storage.pairedCode ?: return
+        val hosts = storage.hosts()
+        if (hosts.isEmpty()) return
         if (usbWatching) return
         usbWatching = true
         val identity = runCatching { storage.identity() }.getOrNull() ?: return
         val metrics = resources.displayMetrics
         thread(name = "inkbridge-usb") {
             var announced = false
+            var turn = 0
             while (usbWatching) {
                 val ip = UsbLink.tetherAddress()
                 if (ip == null || busy) {
@@ -78,6 +83,7 @@ class MainActivity : ComponentActivity() {
                     announced = true
                     runOnUiThread { if (!busy) status.text = "USB cable connected — waiting for the computer…" }
                 }
+                val code = hosts[turn++ % hosts.size].code
                 val session = runCatching {
                     Session.acceptUsb(
                         code, identity, deviceName(), ip, 2000u,
@@ -110,8 +116,8 @@ class MainActivity : ComponentActivity() {
             })
             status = TextView(context).apply { textSize = 15f; setPadding(0, 0, 0, pad) }
             addView(status)
-            reconnect = Button(context).apply { setOnClickListener { reconnect() } }
-            addView(reconnect)
+            hostList = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
+            addView(hostList)
             addView(Button(context).apply {
                 text = "Pair with a computer (scan QR code)"
                 setOnClickListener { scan.launch(Intent(this@MainActivity, ScanActivity::class.java)) }
@@ -123,10 +129,26 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun refresh() {
-        val name = storage.pairedName
-        reconnect.text = if (name != null) "Connect to $name" else "No computer paired yet"
-        reconnect.isEnabled = name != null && !busy
-        if (!busy) status.text = if (name == null) "Run Inkbridge on your computer and scan its QR code." else ""
+        val hosts = storage.hosts()
+        hostList.removeAllViews()
+        for (host in hosts) {
+            hostList.addView(Button(this).apply {
+                text = "Connect to ${host.name}"
+                isEnabled = !busy
+                setOnClickListener { connect(host.code, pair = false, label = host.name) }
+                setOnLongClickListener { confirmForget(host); true }
+            })
+        }
+        if (!busy) status.text = if (hosts.isEmpty()) "Run Inkbridge on your computer and scan its QR code." else ""
+    }
+
+    /** Long-press on a computer: remove its pairing from this tablet. */
+    private fun confirmForget(host: PairedHost) {
+        AlertDialog.Builder(this)
+            .setMessage("Forget ${host.name}? You can pair again by scanning its QR code.")
+            .setPositiveButton("Forget") { _, _ -> storage.forget(host.fingerprint); refresh() }
+            .setNegativeButton("Cancel", null)
+            .show()
     }
 
     private fun pair(code: String) {
@@ -134,11 +156,6 @@ class MainActivity : ComponentActivity() {
             status.text = "That QR code isn't an Inkbridge pairing code."; return
         }
         connect(code, pair = true, label = info.addresses.firstOrNull() ?: "computer")
-    }
-
-    private fun reconnect() {
-        val code = storage.pairedCode ?: return
-        connect(code, pair = false, label = storage.pairedName ?: "computer")
     }
 
     private fun connect(code: String, pair: Boolean, label: String) {
@@ -165,8 +182,7 @@ class MainActivity : ComponentActivity() {
 
     private fun onConnected(session: Session, code: String) {
         val host = session.host()
-        storage.pairedCode = code
-        storage.pairedName = host.name
+        storage.remember(code, host.name)
         SessionHolder.close()
         SessionHolder.session = session
         status.text = "Connected to ${host.name}" + if (host.usb) " over USB" else ""
