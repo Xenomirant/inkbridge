@@ -196,9 +196,11 @@ fn make_encoder(
 /// Linux hardware encoder for CPU frames, at the tablet's full resolution.
 /// `None` (logged once) when the GPU or driver can't encode H.264.
 #[cfg(all(target_os = "linux", feature = "vaapi"))]
+static VAAPI_UNAVAILABLE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+#[cfg(all(target_os = "linux", feature = "vaapi"))]
 fn vaapi_encoder(region: Region, client_max: (u32, u32)) -> Option<Box<dyn VideoEncoder>> {
-    static UNAVAILABLE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-    if UNAVAILABLE.load(std::sync::atomic::Ordering::Relaxed) {
+    if VAAPI_UNAVAILABLE.load(std::sync::atomic::Ordering::Relaxed) {
         return None;
     }
     let (width, height) = fit_within(region.width, region.height, client_max.0, client_max.1);
@@ -223,7 +225,7 @@ fn vaapi_encoder(region: Region, client_max: (u32, u32)) -> Option<Box<dyn Video
             Some(Box::new(enc))
         }
         Err(e) => {
-            UNAVAILABLE.store(true, std::sync::atomic::Ordering::Relaxed);
+            VAAPI_UNAVAILABLE.store(true, std::sync::atomic::Ordering::Relaxed);
             tracing::info!("no VA-API encoder, using software: {e}");
             None
         }
@@ -422,6 +424,8 @@ impl Pipeline {
         out: &tokio::sync::mpsc::Sender<VideoChunk>,
     ) -> anyhow::Result<Flow> {
         let enc = self.encoder.as_mut().expect("ensure_encoder ran");
+        #[cfg(all(target_os = "linux", feature = "vaapi"))]
+        let was_vaapi = enc.name() == "vaapi";
         self.rate.tick();
         let target = self.rate.target(self.encoder_max);
         if target != self.rate.applied {
@@ -443,6 +447,14 @@ impl Pipeline {
                 self.encoder = None;
                 self.force_key = true;
                 if self.failures >= HARDWARE_RETRIES {
+                    #[cfg(all(target_os = "linux", feature = "vaapi"))]
+                    if was_vaapi {
+                        // Same CPU frames, software encoder from now on.
+                        VAAPI_UNAVAILABLE.store(true, std::sync::atomic::Ordering::Relaxed);
+                        tracing::warn!("VA-API encoding keeps failing; using the software encoder");
+                        self.failures = 0;
+                        return Ok(Flow::Continue);
+                    }
                     self.fall_back(&anyhow::Error::new(e))?;
                 }
                 return Ok(Flow::Continue);

@@ -2,8 +2,9 @@
 
 Status: **X11 and Wayland sessions supported** (screen capture, H.264 with VA-API hardware encoding or
 openh264 software fallback, pen with pressure via uinput, a no-setup pointer fallback on Wayland, USB
-tethering). Wayland and VA-API are implemented and unit-tested; end-to-end validation on real hardware
-(GNOME and KDE, Intel and AMD GPUs) is pending.
+tethering). Wayland and VA-API are implemented and unit-tested; the VA-API encoder is verified on an
+NVIDIA RTX 5060 through Mesa `d3d12` on WSL (the stream decodes with correct colours). End-to-end
+validation on a real desktop (GNOME and KDE, Intel and AMD GPUs) is pending.
 
 ## Wayland: screen sharing permission
 
@@ -52,7 +53,22 @@ reference frame, CBR with about two frames of buffering, no periodic keyframes. 
 openh264 (software, resolution capped for speed). The host log says which one runs.
 
 The encoder opens `/dev/dri/renderD*`; desktop sessions grant the logged-in user access automatically.
-(On WSL the user must be in the `render` group.)
+If the driver produces errors or empty output three times in a row, the host switches to openh264 for
+the rest of the run.
+
+### WSL (developers)
+
+Mesa's `d3d12` driver forwards to the Windows GPU. It needs three things:
+
+- membership in the `render` group: `sudo usermod -aG render,video $USER`, then `wsl --shutdown`;
+- `GALLIUM_DRIVER=d3d12`, because WSL's render node belongs to `vgem` and Mesa doesn't pick `d3d12` for it
+  on its own (otherwise: `d3d12_drv_video.so init failed`);
+- on PCs with two GPUs, `MESA_D3D12_DEFAULT_ADAPTER_NAME=NVIDIA` (or `AMD`) to choose the discrete one.
+  Mesa 26.0 on an Intel iGPU accepted encode jobs but produced no output; the host then falls back to
+  software.
+
+Hardware test: `GALLIUM_DRIVER=d3d12 MESA_D3D12_DEFAULT_ADAPTER_NAME=NVIDIA cargo test -p ib-encode
+--features vaapi -- --ignored`.
 
 ## USB connection
 

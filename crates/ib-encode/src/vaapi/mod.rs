@@ -19,6 +19,7 @@ mod ffi;
 use std::ffi::{CStr, c_void};
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::ptr;
+use std::sync::OnceLock;
 
 use ib_capture::{Frame, FrameData};
 use ib_protocol::{FrameKind, VideoCodec};
@@ -49,15 +50,36 @@ fn status_str(status: ffi::VAStatus) -> String {
 const OK: ffi::VAStatus = ffi::VA_STATUS_SUCCESS.cast_signed();
 
 /// An initialised VA display on a DRM render node.
+///
+/// One per process, never terminated: `vaTerminate` unloads the driver, and
+/// some drivers (Mesa d3d12 on WSL) still run thread-exit destructors from
+/// it afterwards, crashing the process. Keeping it also makes later
+/// sessions start faster.
 struct Display {
     dpy: ffi::VADisplay,
     _fd: OwnedFd,
     vendor: String,
 }
 
+// SAFETY: libva displays may be used from several threads; each encoder
+// only touches its own config, context, surfaces and buffers.
+unsafe impl Send for Display {}
+// SAFETY: as above.
+unsafe impl Sync for Display {}
+
+static DISPLAY: OnceLock<Result<Display, String>> = OnceLock::new();
+
 impl Display {
+    /// The process-wide display, opened on first use.
+    fn shared() -> Result<&'static Self, EncodeError> {
+        DISPLAY
+            .get_or_init(Self::open)
+            .as_ref()
+            .map_err(|e| EncodeError::Unavailable(e.clone()))
+    }
+
     /// Opens the first render node whose driver initialises.
-    fn open() -> Result<Self, EncodeError> {
+    fn open() -> Result<Self, String> {
         let mut last = String::from("no /dev/dri/renderD* device");
         for n in 128..136 {
             let path = format!("/dev/dri/renderD{n}");
@@ -103,7 +125,7 @@ impl Display {
                 vendor,
             });
         }
-        Err(EncodeError::Unavailable(format!("VA-API: {last}")))
+        Err(format!("VA-API: {last}"))
     }
 
     fn entrypoints(&self, profile: ffi::VAProfile) -> Vec<ffi::VAEntrypoint> {
@@ -134,13 +156,6 @@ impl Display {
         // SAFETY: valid display; one attribute in/out.
         let st = unsafe { ffi::vaGetConfigAttributes(self.dpy, profile, entry, &raw mut a, 1) };
         (st == OK && a.value != ffi::VA_ATTRIB_NOT_SUPPORTED).then_some(a.value)
-    }
-}
-
-impl Drop for Display {
-    fn drop(&mut self) {
-        // SAFETY: display initialised in `open`, terminated once.
-        unsafe { ffi::vaTerminate(self.dpy) };
     }
 }
 
@@ -179,7 +194,7 @@ struct RefPic {
 pub struct VaapiEncoder {
     config: EncoderConfig,
     seq: SeqParams,
-    display: Display,
+    display: &'static Display,
     va_config: ffi::VAConfigID,
     context: ffi::VAContextID,
     input: ffi::VASurfaceID,
@@ -223,8 +238,8 @@ impl VaapiEncoder {
                 config.width, config.height
             )));
         }
-        let display = Display::open()?;
-        let (profile, va_profile, entry) = pick_profile(&display).ok_or_else(|| {
+        let display = Display::shared()?;
+        let (profile, va_profile, entry) = pick_profile(display).ok_or_else(|| {
             EncodeError::Unavailable(format!(
                 "the VA-API driver ({}) has no H.264 encoder",
                 display.vendor
@@ -809,7 +824,7 @@ impl Drop for VaapiEncoder {
     fn drop(&mut self) {
         let dpy = self.display.dpy;
         // SAFETY: handles created by this encoder, each destroyed once,
-        // before the display terminates; invalid ones are skipped.
+        // on the shared display; invalid ones are skipped.
         unsafe {
             if self.coded != ffi::VA_INVALID_ID {
                 ffi::vaDestroyBuffer(dpy, self.coded);
@@ -863,6 +878,13 @@ impl VideoEncoder for VaapiEncoder {
                 return Err(e);
             }
         };
+        if data.is_empty() {
+            // Seen with Mesa d3d12 on some Intel GPUs: no error, no output.
+            self.reference = None;
+            return Err(EncodeError::Unavailable(
+                "the VA-API driver produced no output".into(),
+            ));
+        }
         if idr && !h264::nal_types(&data).contains(&7) {
             // The driver wrote no parameter sets: supply ours.
             let mut with = h264::sps(&self.seq);
@@ -893,6 +915,7 @@ impl VideoEncoder for VaapiEncoder {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use openh264::formats::YUVSource;
 
     /// Needs a VA-API H.264 encoder and access to /dev/dri/renderD*:
     /// `cargo test -p ib-encode --features vaapi -- --ignored`.
@@ -907,6 +930,7 @@ mod tests {
             bitrate_kbps: 4000,
         };
         let mut enc = VaapiEncoder::new(config).expect("VA-API encoder");
+        let mut decoder = openh264::decoder::Decoder::new().expect("openh264 decoder");
         let mut kinds = Vec::new();
         for i in 0..10u8 {
             let px = [i * 20, 100, 200, 255].repeat(640 * 360);
@@ -925,6 +949,17 @@ mod tests {
                     "{types:?}"
                 );
             }
+            // The stream must decode, at full size, with the right colours.
+            let pic = decoder
+                .decode(&out.data)
+                .expect("valid H.264")
+                .expect("one picture per frame");
+            assert_eq!(pic.dimensions(), (640, 360));
+            let luma = |b: u8, g: u8, r: u8| {
+                ((47 * u32::from(r) + 157 * u32::from(g) + 16 * u32::from(b) + 128) >> 8) + 16
+            };
+            let y = u32::from(pic.y()[360 / 2 * pic.strides().0 + 320]);
+            assert!(y.abs_diff(luma(i * 20, 100, 200)) <= 6, "frame {i}: Y {y}");
             kinds.push(out.kind);
         }
         assert_eq!(kinds[0], FrameKind::Key);

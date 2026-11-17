@@ -17,14 +17,14 @@ ib-clock.workspace = true
 [features]
 # Linux Wayland capture (portal + PipeWire). Needs libpipewire-0.3-dev and
 # libclang to build; off by default so plain builds need no system packages.
-wayland = ["dep:pipewire", "dep:ib-portal"]
+wayland = ["dep:pipewire", "dep:ib-portal", "dep:tracing"]
 
 [target.'cfg(target_os = "linux")'.dependencies]
 x11rb.workspace = true
 libc.workspace = true
 pipewire = { workspace = true, optional = true }
 ib-portal = { workspace = true, optional = true }
-tracing.workspace = true
+tracing = { workspace = true, optional = true }
 
 [target.'cfg(windows)'.dependencies]
 windows-capture.workspace = true
