@@ -58,6 +58,7 @@ const OK: ffi::VAStatus = ffi::VA_STATUS_SUCCESS.cast_signed();
 struct Display {
     dpy: ffi::VADisplay,
     _fd: OwnedFd,
+    node: String,
     vendor: String,
 }
 
@@ -78,9 +79,11 @@ impl Display {
             .map_err(|e| EncodeError::Unavailable(e.clone()))
     }
 
-    /// Opens the first render node whose driver initialises.
+    /// Opens the first render node that can encode H.264. PCs often have
+    /// several GPUs, and the first one (e.g. `nouveau` driving the monitor)
+    /// may decode only.
     fn open() -> Result<Self, String> {
-        let mut last = String::from("no /dev/dri/renderD* device");
+        let mut tried = Vec::new();
         for n in 128..136 {
             let path = format!("/dev/dri/renderD{n}");
             let fd: OwnedFd = match std::fs::OpenOptions::new()
@@ -91,7 +94,7 @@ impl Display {
                 Ok(f) => f.into(),
                 Err(e) => {
                     if e.kind() != std::io::ErrorKind::NotFound {
-                        last = format!("{path}: {e}");
+                        tried.push(format!("{path}: {e}"));
                     }
                     continue;
                 }
@@ -105,7 +108,7 @@ impl Display {
             // SAFETY: valid display; out-pointers are locals.
             let st = unsafe { ffi::vaInitialize(dpy, &raw mut major, &raw mut minor) };
             if st != OK {
-                last = format!("{path}: {}", status_str(st));
+                tried.push(format!("{path}: {}", status_str(st)));
                 // SAFETY: terminating the display we just created.
                 unsafe { ffi::vaTerminate(dpy) };
                 continue;
@@ -119,13 +122,26 @@ impl Display {
                     CStr::from_ptr(v).to_string_lossy().into_owned()
                 }
             };
-            return Ok(Self {
+            let display = Self {
                 dpy,
                 _fd: fd,
+                node: path,
                 vendor,
-            });
+            };
+            if pick_profile(&display).is_some() {
+                return Ok(display);
+            }
+            tried.push(format!(
+                "{}: {} has no H.264 encoder",
+                display.node, display.vendor
+            ));
+            // Not terminated, for the reason given on `Display`.
+            std::mem::forget(display);
         }
-        Err(format!("VA-API: {last}"))
+        if tried.is_empty() {
+            tried.push("no /dev/dri/renderD* device".into());
+        }
+        Err(format!("VA-API: {}", tried.join("; ")))
     }
 
     fn entrypoints(&self, profile: ffi::VAProfile) -> Vec<ffi::VAEntrypoint> {
@@ -213,6 +229,7 @@ impl std::fmt::Debug for VaapiEncoder {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("VaapiEncoder")
             .field("config", &self.config)
+            .field("node", &self.display.node)
             .field("vendor", &self.display.vendor)
             .field("profile", &self.seq.profile)
             .finish_non_exhaustive()
@@ -224,6 +241,14 @@ impl std::fmt::Debug for VaapiEncoder {
 unsafe impl Send for VaapiEncoder {}
 
 impl VaapiEncoder {
+    /// The render node and driver in use, e.g. `/dev/dri/renderD129 (Intel iHD driver …)`.
+    pub fn device(&self) -> String {
+        format!(
+            "{} ({}), {:?} profile",
+            self.display.node, self.display.vendor, self.seq.profile
+        )
+    }
+
     /// Opens the GPU's encoder for `config` (H.264, even dimensions).
     pub fn new(config: EncoderConfig) -> Result<Self, EncodeError> {
         if config.codec != VideoCodec::H264 {

@@ -41,6 +41,17 @@ fn parse_args() -> anyhow::Result<Args> {
             "--fake-sink" => args.fake_sink = true,
             "--fix-usb-routing" => std::process::exit(run_routing(true)),
             "--undo-usb-routing" => std::process::exit(run_routing(false)),
+            #[cfg(all(target_os = "linux", feature = "wayland", feature = "vaapi"))]
+            "--self-test" => {
+                let report = it
+                    .next()
+                    .map_or_else(|| "inkbridge-selftest.txt".into(), std::path::PathBuf::from);
+                // Own thread: the portal blocks while the desktop's dialog is open.
+                let code = std::thread::spawn(move || ib_host::selftest::run(&report))
+                    .join()
+                    .map_err(|_| anyhow::anyhow!("self-test panicked"))??;
+                std::process::exit(code);
+            }
             "--setup-uinput" => std::process::exit(run_uinput(true)),
             "--remove-uinput-setup" => std::process::exit(run_uinput(false)),
             "-h" | "--help" => {
@@ -49,7 +60,8 @@ fn parse_args() -> anyhow::Result<Args> {
                      inkbridge-host --fix-usb-routing    keep internet traffic off USB-tethered tablets (asks for admin once)\n\
                      inkbridge-host --undo-usb-routing   restore Windows' automatic routing for them\n\
                      inkbridge-host --setup-uinput       Linux: allow pen pressure via a virtual tablet (asks for admin once)\n\
-                     inkbridge-host --remove-uinput-setup  Linux: undo --setup-uinput"
+                     inkbridge-host --remove-uinput-setup  Linux: undo --setup-uinput\n\
+                     inkbridge-host --self-test [REPORT]  Linux: check encoder, screen sharing and pointer; write a report"
                 );
                 std::process::exit(0);
             }

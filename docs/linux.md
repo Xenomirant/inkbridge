@@ -88,6 +88,18 @@ Wayland (`wayland`) and VA-API (`vaapi`) are default features of `ib-host`. Use
 system packages. The libva bindings are generated from the installed headers at build time; libva keeps
 its ABI stable, so the binary also runs with newer libva.
 
+## Validating on real hardware
+
+`inkbridge-host --self-test [REPORT]` checks what CI can't: the VA-API encoder (60 frames encoded,
+decoded independently and colour-checked), the desktop's screen-sharing and remote-control permission,
+PipeWire frames (also run through the encoder), the pointer, and uinput access. It writes a plain-text
+report and the last captured frame (`capture.ppm`).
+
+For a live-USB session, `tools/linux-validation/make-kit.sh` builds a kit folder (`target/linux-kit/inkbridge`)
+to copy onto the stick: the host binary, `run.sh` (system facts → self-test → tablet in pointer mode →
+tablet with pressure, with yes/no questions recorded) and the pen test page. Build it on the same Ubuntu
+release as the live system.
+
 ## Status table
 
 | Feature | X11 | Wayland |

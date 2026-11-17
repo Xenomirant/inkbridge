@@ -78,6 +78,11 @@ impl WaylandDesktop {
         Box::new(self.capture.clone())
     }
 
+    /// Desktop pixels → the portal's logical coordinates.
+    pub fn logical_scale(&self) -> f64 {
+        self.capture.logical_scale()
+    }
+
     /// The no-root pen fallback (pointer only), if pointer control was granted.
     pub fn pointer_sink(&self) -> Option<Box<dyn PenSink>> {
         let pointer = self.grant.pointer.clone()?;

@@ -9,6 +9,8 @@ pub mod pairing_page;
 pub mod pen_thread;
 pub mod platform;
 pub mod scroll;
+#[cfg(all(target_os = "linux", feature = "wayland", feature = "vaapi"))]
+pub mod selftest;
 pub mod server;
 pub mod storage;
 pub mod touch;
