@@ -300,6 +300,7 @@ struct Rate {
 
 impl Rate {
     const MIN_KBPS: u32 = 1_500;
+    const REQUEST_FLOOR_DIVISOR: u32 = 3;
 
     fn new() -> Self {
         Self {
@@ -324,8 +325,16 @@ impl Rate {
     }
 
     /// The bitrate to use for an encoder whose own maximum is `encoder_max`.
+    ///
+    /// The tablet's request comes from delay measurements, which on a
+    /// jittery Wi-Fi fall even when the link has room, so it can lower the
+    /// bitrate only to a third of the maximum. Below that the picture gets
+    /// worse (or frames are skipped) faster than the latency improves. The
+    /// local cap reacts to frames that really could not be sent and has no
+    /// such floor.
     fn target(&self, encoder_max: u32) -> u32 {
         self.requested
+            .max(encoder_max / Self::REQUEST_FLOOR_DIVISOR)
             .min(self.local_cap)
             .min(encoder_max)
             .max(Self::MIN_KBPS.min(encoder_max))
@@ -722,6 +731,9 @@ mod tests {
         assert_eq!(r.target(20_000), 20_000); // no request yet: encoder maximum
         r.requested = 8_000;
         assert_eq!(r.target(20_000), 8_000);
+        r.requested = 2_000;
+        assert_eq!(r.target(20_000), 6_666, "requests stop at a third");
+        r.requested = 8_000;
         r.on_skip(8_000);
         assert_eq!(r.target(20_000), 6_400); // immediate local cut
         r.requested = 30_000;
