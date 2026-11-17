@@ -30,16 +30,18 @@ pub struct HostSettings {
 }
 
 /// Host side. `pending_secret` is the secret currently shown in the QR code,
-/// if pairing mode is open. Returns the client's hello on success; on
-/// failure the client has already been told why.
+/// if pairing mode is open. Returns the client's hello and whether it used
+/// that secret (the caller must then retire it); on failure the client has
+/// already been told why.
 pub async fn host_handshake(
     ctl: &mut Control,
     peer: Fingerprint,
     settings: &HostSettings,
     store: &mut PairingStore,
     pending_secret: Option<PairingSecret>,
-) -> Result<ClientHello, SessionError> {
+) -> Result<(ClientHello, bool), SessionError> {
     let mut msg = ctl.recv().await?;
+    let mut used_secret = false;
 
     if let ControlMessage::PairRequest {
         secret,
@@ -50,8 +52,14 @@ pub async fn host_handshake(
             reject(ctl, RejectReason::BadPairingSecret).await?;
             return Err(SessionError::Rejected(RejectReason::BadPairingSecret));
         }
+        let known = store.is_paired(peer);
         store.add(peer, device_name)?;
-        tracing::info!(device = %device_name, fingerprint = ?peer, "paired new device");
+        used_secret = true;
+        if known {
+            tracing::info!(device = %device_name, fingerprint = ?peer, "known device paired again");
+        } else {
+            tracing::info!(device = %device_name, fingerprint = ?peer, "paired new device");
+        }
         ctl.send(&ControlMessage::PairAccepted {
             host_name: settings.host_name.clone(),
         })
@@ -83,7 +91,7 @@ pub async fn host_handshake(
         transport: settings.transport,
     }))
     .await?;
-    Ok(hello)
+    Ok((hello, used_secret))
 }
 
 async fn reject(ctl: &mut Control, reason: RejectReason) -> Result<(), TransportError> {
@@ -197,7 +205,8 @@ mod tests {
                 &mut store,
                 pending,
             )
-            .await;
+            .await
+            .map(|(hello, _)| hello);
             // Keep the connection open until the client is done reading.
             conn.closed().await;
             (r, store)

@@ -261,12 +261,11 @@ impl Host {
         let pending = *self.pairing.lock().await;
         let (hello, newly_paired) = {
             let mut store = self.store.lock().await;
-            let was_paired = store.is_paired(peer);
-            let hello = host_handshake(&mut ctl, peer, &settings, &mut store, pending).await?;
-            (hello, !was_paired)
+            host_handshake(&mut ctl, peer, &settings, &mut store, pending).await?
         };
         if newly_paired {
-            // One-time secret: never accept it twice.
+            // One-time secret: never accept it twice, not even from a
+            // tablet that was paired before.
             *self.pairing.lock().await = None;
         }
         tracing::info!(device = %hello.device_name, "session started");
@@ -484,10 +483,8 @@ mod tests {
         r
     }
 
-    /// An app that was killed leaves its session open on the host until the
-    /// idle timeout. The same tablet connecting again must get in at once.
-    #[tokio::test(flavor = "multi_thread")]
-    async fn a_reconnecting_tablet_replaces_its_dead_session() {
+    /// A host on a loopback port with pairing open.
+    async fn host() -> (Identity, SocketAddr, PairingOffer) {
         let identity = Identity::generate().unwrap();
         let config = HostConfig {
             host_name: "Host".into(),
@@ -501,12 +498,20 @@ mod tests {
             pen_features: PenFeatures::default(),
             video: false,
         };
-        let (pen, _pen_rx) = std::sync::mpsc::channel();
+        let (pen, pen_rx) = std::sync::mpsc::channel();
+        std::mem::forget(pen_rx); // nobody reads the pen in these tests
         let host = Host::new(identity.clone(), config, PairingStore::in_memory(), pen).unwrap();
         let addr = host.local_addr().unwrap();
         let offer = host.open_pairing().await.unwrap();
-        let server = tokio::spawn(host.clone().run(|_| {}));
+        tokio::spawn(host.run(|_| {}));
+        (identity, addr, offer)
+    }
 
+    /// An app that was killed leaves its session open on the host until the
+    /// idle timeout. The same tablet connecting again must get in at once.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_reconnecting_tablet_replaces_its_dead_session() {
+        let (identity, addr, offer) = host().await;
         let tablet = Identity::generate().unwrap();
         let first = ib_transport::ClientEndpoint::new(tablet.clone()).unwrap();
         let old = first.connect(addr, identity.fingerprint()).await.unwrap();
@@ -522,7 +527,30 @@ mod tests {
         .expect("the new connection waited for the old session");
         rejoined.unwrap();
         old.closed().await;
-        server.abort();
+    }
+
+    /// The secret in the QR code works once, whoever uses it: a tablet that
+    /// is already paired doesn't leave it open for the next scanner.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_pairing_secret_is_spent_by_a_known_tablet_too() {
+        let (identity, addr, offer) = host().await;
+        let tablet = Identity::generate().unwrap();
+        let endpoint = ib_transport::ClientEndpoint::new(tablet).unwrap();
+        for expect_ok in [true, false] {
+            let conn = endpoint
+                .connect(addr, identity.fingerprint())
+                .await
+                .unwrap();
+            let joined = join(&conn, Some(offer.secret)).await;
+            assert_eq!(joined.is_ok(), expect_ok, "{joined:?}");
+            conn.close("done");
+        }
+        // Still paired: it gets in without the secret.
+        let conn = endpoint
+            .connect(addr, identity.fingerprint())
+            .await
+            .unwrap();
+        join(&conn, None).await.unwrap();
     }
 
     #[test]
