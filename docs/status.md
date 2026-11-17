@@ -69,9 +69,12 @@ Still to do for M4:
 - Possible brief flicker on the tablet after switching the View (zoom) mode.
 - The host never forgets a paired tablet (`paired-devices.txt` has no expiry). The tablet side expires
   its list; the host side matters more, because a paired tablet can inject input.
-- When the Wi-Fi stalls, the picture freezes until the reliable video stream catches up (the p95
-  above). The pipeline now skips frames before encoding instead of sending keyframes, but a stall of
-  the link itself still shows.
+- Wi-Fi stalls: on the campus network the link pauses for 100-230 ms every 5-10 s and loses 14-40
+  packets in a burst (host log, `RUST_LOG=info,ib_host::server=debug`, "video link" lines). The
+  picture freezes for that long. QUIC used to buffer up to 10 MB of video unseen during a pause and
+  deliver it late (p95 up to 720 ms); its send window is now 128 KB, so the writer blocks, the
+  pipeline skips frames, and the worst p95 in a 60 s test was 227 ms. Not tried: turning AirDrop and
+  Handoff off on the Mac (they make the Wi-Fi radio leave the channel), and a quiet network.
 - Reconnecting: the pad reconnects by itself over Wi-Fi when the connection drops (host restarted,
   Wi-Fi blinked), and the host lets a reconnecting tablet replace its dead session at once. Over USB
   the user still goes back to the home screen.

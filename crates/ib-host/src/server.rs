@@ -28,6 +28,50 @@ struct SessionState {
     aspect: f64,
 }
 
+/// Logs what the network did to the video every couple of seconds (debug
+/// level): how long frames waited to be handed to QUIC, and its loss and
+/// window counters. A long wait means the link, not the encoder, stalled.
+struct LinkLog {
+    since: std::time::Instant,
+    last: ib_transport::LinkStats,
+    frames: u32,
+    slowest: std::time::Duration,
+}
+
+impl LinkLog {
+    const EVERY: std::time::Duration = std::time::Duration::from_secs(2);
+
+    fn new(conn: &Connection) -> Self {
+        Self {
+            since: std::time::Instant::now(),
+            last: conn.link_stats(),
+            frames: 0,
+            slowest: std::time::Duration::ZERO,
+        }
+    }
+
+    fn sent(&mut self, conn: &Connection, wait: std::time::Duration) {
+        self.frames += 1;
+        self.slowest = self.slowest.max(wait);
+        if self.since.elapsed() < Self::EVERY {
+            return;
+        }
+        let now = conn.link_stats();
+        tracing::debug!(
+            frames = self.frames,
+            slowest_send_ms = self.slowest.as_millis(),
+            packets = now.sent_packets - self.last.sent_packets,
+            lost = now.lost_packets - self.last.lost_packets,
+            slowdowns = now.congestion_events - self.last.congestion_events,
+            window_kb = now.window_bytes / 1024,
+            rtt_ms = now.rtt.as_millis(),
+            "video link"
+        );
+        *self = Self::new(conn);
+        self.last = now;
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct HostConfig {
     pub host_name: String,
@@ -287,8 +331,11 @@ impl Host {
                     let conn = conn.clone();
                     video_task = Some(tokio::spawn(async move {
                         let mut stream = conn.open_video().await?;
+                        let mut link = LinkLog::new(&conn);
                         while let Some(chunk) = rx.recv().await {
+                            let started = std::time::Instant::now();
                             stream.send(&chunk).await?;
+                            link.sent(&conn, started.elapsed());
                         }
                         Ok::<_, ib_transport::TransportError>(())
                     }));

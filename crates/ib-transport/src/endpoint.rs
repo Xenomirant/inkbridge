@@ -28,6 +28,10 @@ fn bind_udp(addr: SocketAddr) -> std::io::Result<std::net::UdpSocket> {
     Ok(socket.into())
 }
 
+/// Stream bytes that may be buffered or in flight, unacknowledged: about
+/// 40 ms of video at the highest bitrate.
+const SEND_WINDOW: u64 = 128 * 1024;
+
 /// QUIC settings tuned for an interactive LAN/USB link.
 fn transport_config() -> Arc<quinn::TransportConfig> {
     let mut t = quinn::TransportConfig::default();
@@ -36,6 +40,11 @@ fn transport_config() -> Arc<quinn::TransportConfig> {
         quinn::IdleTimeout::try_from(Duration::from_secs(5)).expect("valid timeout"),
     ));
     t.keep_alive_interval(Some(Duration::from_millis(1000)));
+    // Don't let stream data pile up unsent when the link stalls: quinn's
+    // default takes 10 MB (seconds of video) without the sender noticing.
+    // With a small window the video writer blocks instead, and the pipeline
+    // skips frames rather than delivering old ones late.
+    t.send_window(SEND_WINDOW);
     // Small datagram buffers: stale pen samples are worse than lost ones.
     t.datagram_receive_buffer_size(Some(64 * 1024));
     t.datagram_send_buffer_size(64 * 1024);
@@ -222,6 +231,19 @@ impl UsbListener {
     }
 }
 
+/// What QUIC knows about the path to the peer. Counters are totals since
+/// the connection started.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LinkStats {
+    pub sent_packets: u64,
+    pub lost_packets: u64,
+    /// Times the sender slowed down because it saw loss.
+    pub congestion_events: u64,
+    /// Bytes the sender may have in flight.
+    pub window_bytes: u64,
+    pub rtt: Duration,
+}
+
 /// An authenticated QUIC connection to a peer with a known fingerprint.
 #[derive(Debug, Clone)]
 pub struct Connection {
@@ -269,6 +291,18 @@ impl Connection {
     /// Smoothed round-trip time estimate from QUIC.
     pub fn rtt(&self) -> Duration {
         self.conn.rtt()
+    }
+
+    /// Counters of the network path, for diagnosing stalls.
+    pub fn link_stats(&self) -> LinkStats {
+        let path = self.conn.stats().path;
+        LinkStats {
+            sent_packets: path.sent_packets,
+            lost_packets: path.lost_packets,
+            congestion_events: path.congestion_events,
+            window_bytes: path.cwnd,
+            rtt: path.rtt,
+        }
     }
 
     pub fn close(&self, reason: &str) {
