@@ -31,6 +31,11 @@ exception (`LICENSE-APPSTORE-EXCEPTION.md`). Read before changing things:
 ib-encode, ib-inject, ib-portal (Linux Wayland portal), ib-host (binary `inkbridge-host`), ib-ffi (UniFFI).
 `apps/android` — Kotlin client. `tools/` — fake-tablet, pen-test page, linux-validation kit.
 
+## Repository and machines
+Source of truth: https://github.com/Xenomirant/inkbridge (private for now), branch `main`. Development
+happens on several machines (WSL on the Windows PC, the MacBook): `git pull` before starting and push
+finished commits, so the others stay in sync.
+
 ## Build and test
 - `cargo test --workspace`; host: `cargo run -p ib-host -- --help`.
 - Android: `apps/android` (Gradle; Rust core via cargo-ndk).

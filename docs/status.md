@@ -23,7 +23,8 @@ Implemented and unit-tested (see `docs/linux.md`):
   Mesa d3d12 in WSL only.
 - `inkbridge-host --self-test` and the live-USB kit (`tools/linux-validation`).
 
-**Not yet validated on a real Linux desktop.** Paused to do macOS first; resume by booting the
+**Not yet validated on a real Linux desktop.** Paused to do macOS first (on the MacBook, cloned from
+GitHub); resume by booting the
 live-USB kit (Ubuntu 26.04.1; Intel iGPU encodes via iHD, the RTX runs nouveau there).
 
 ## Next — M4 macOS host
