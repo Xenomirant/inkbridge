@@ -10,6 +10,8 @@
 
 #[cfg(target_os = "linux")]
 mod linux;
+#[cfg(target_os = "macos")]
+mod macos;
 #[cfg(all(target_os = "linux", feature = "wayland"))]
 mod portal;
 mod tracker;
@@ -18,6 +20,8 @@ mod windows;
 
 #[cfg(target_os = "linux")]
 pub use linux::UinputPenSink;
+#[cfg(target_os = "macos")]
+pub use macos::{MacPenSink, main_display};
 #[cfg(all(target_os = "linux", feature = "wayland"))]
 pub use portal::PortalPointerSink;
 pub use tracker::{PenTracker, Step};
@@ -47,11 +51,16 @@ pub fn platform_sink(desktop: ib_geometry::Region) -> Result<Box<dyn PenSink>, I
     {
         Ok(Box::new(UinputPenSink::new(desktop)?))
     }
-    #[cfg(not(any(windows, target_os = "linux")))]
+    #[cfg(target_os = "macos")]
+    {
+        let _ = desktop;
+        Ok(Box::new(MacPenSink::new()?))
+    }
+    #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
     {
         let _ = desktop;
         Err(InjectError::Unavailable(
-            "no pen backend for this OS yet (macOS in M4)".into(),
+            "no pen backend for this OS".into(),
         ))
     }
 }

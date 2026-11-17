@@ -48,6 +48,10 @@ ib-portal = { workspace = true, optional = true }
 # `--self-test` decodes the encoder's output independently.
 openh264.workspace = true
 
+[target.'cfg(target_os = "macos")'.dependencies]
+# Thread QoS for the pen thread.
+libc.workspace = true
+
 [target.'cfg(windows)'.dependencies]
 windows = { workspace = true, features = [
     "Win32_Foundation",

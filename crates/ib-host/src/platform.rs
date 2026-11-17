@@ -111,6 +111,16 @@ pub fn raise_thread_priority() {
             tracing::warn!("could not raise pen thread priority: {e}");
         }
     }
+    #[cfg(target_os = "macos")]
+    {
+        // SAFETY: plain FFI call that only changes the calling thread's QoS class.
+        let rc = unsafe {
+            libc::pthread_set_qos_class_self_np(libc::qos_class_t::QOS_CLASS_USER_INTERACTIVE, 0)
+        };
+        if rc != 0 {
+            tracing::warn!("could not raise pen thread priority: error {rc}");
+        }
+    }
 }
 
 /// The screen capture backend for a new tablet session: on Wayland the
@@ -165,10 +175,33 @@ pub fn primary_display() -> Region {
             return primary.bounds;
         }
     }
+    #[cfg(target_os = "macos")]
+    {
+        let (region, _) = ib_inject::main_display();
+        if region.width > 0 && region.height > 0 {
+            return region;
+        }
+    }
     Region {
         x: 0,
         y: 0,
         width: 1920,
         height: 1080,
     }
+}
+
+/// The computer's name as shown on the tablet.
+pub fn host_name() -> String {
+    #[cfg(target_os = "macos")]
+    if let Ok(out) = std::process::Command::new("scutil")
+        .args(["--get", "ComputerName"])
+        .output()
+        && let Ok(name) = String::from_utf8(out.stdout)
+        && !name.trim().is_empty()
+    {
+        return name.trim().to_owned();
+    }
+    std::env::var("COMPUTERNAME")
+        .or_else(|_| std::env::var("HOSTNAME"))
+        .unwrap_or_else(|_| "Inkbridge host".into())
 }

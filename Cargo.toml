@@ -59,6 +59,9 @@ pkg-config = "0.3"
 # Linux Wayland: PipeWire client (binds libpipewire; feature-gated).
 pipewire = "0.10.1"
 ashpd = { version = "0.14", default-features = false, features = ["tokio", "screencast", "remote_desktop"] }
+# macOS: generated framework bindings (CGEvent pen, display geometry, permission checks).
+objc2-core-foundation = "0.3.2"
+objc2-core-graphics = "0.3.2"
 # Rust <-> Kotlin/Swift bindings; pre-1.0, so pinned to a minor version (ADR-0001).
 uniffi = "=0.32.2"
 

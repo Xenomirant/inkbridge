@@ -187,9 +187,7 @@ async fn main() -> anyhow::Result<()> {
     };
     let (pen_tx, pen_handle) = pen_thread::spawn(make_sink, region)?;
 
-    let host_name = std::env::var("COMPUTERNAME")
-        .or_else(|_| std::env::var("HOSTNAME"))
-        .unwrap_or_else(|_| "Inkbridge host".into());
+    let host_name = platform::host_name();
     let host_label = host_name.clone();
     let bind = SocketAddr::new(Ipv6Addr::UNSPECIFIED.into(), args.port);
     let config = HostConfig {
