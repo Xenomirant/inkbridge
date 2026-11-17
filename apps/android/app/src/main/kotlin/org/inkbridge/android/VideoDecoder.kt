@@ -27,6 +27,9 @@ class VideoDecoder(private val session: Session, private val surface: Surface) {
     private var height = 0
     private val info = MediaCodec.BufferInfo()
 
+    /** Frames given to the decoder that it hasn't returned yet. */
+    private var pending = 0
+
     fun start() {
         if (running) return
         running = true
@@ -43,8 +46,10 @@ class VideoDecoder(private val session: Session, private val surface: Surface) {
     private fun loop() {
         session.requestKeyframe() // start from a clean picture
         while (running) {
-            val frame = session.nextVideoFrame(100u) ?: continue
+            // While the decoder still holds a frame, come back quickly to show it.
+            val frame = session.nextVideoFrame(if (pending > 0) 4u else 100u)
             try {
+                if (frame == null) { drain(0); continue }
                 decode(frame)
             } catch (e: Exception) {
                 Log.w(TAG, "decoder error, resynchronising", e)
@@ -68,8 +73,10 @@ class VideoDecoder(private val session: Session, private val surface: Surface) {
             if (config.isNotEmpty()) queue(concat(frame.data, config), 0L, MediaCodec.BUFFER_FLAG_CODEC_CONFIG)
         }
         val flags = if (frame.keyframe) MediaCodec.BUFFER_FLAG_KEY_FRAME else 0
-        queue(frame.data, frame.captureTUs.toLong(), flags)
-        drain()
+        if (queue(frame.data, frame.captureTUs.toLong(), flags)) pending++
+        // Wait for this frame to come out, so it is shown now and not when
+        // the next one arrives (which on a still screen can be much later).
+        drain(if (pending > 0) OUTPUT_WAIT_US else 0)
     }
 
     private fun create(w: Int, h: Int): MediaCodec {
@@ -92,31 +99,41 @@ class VideoDecoder(private val session: Session, private val surface: Surface) {
         return decoder
     }
 
-    private fun queue(data: ByteArray, ptsUs: Long, flags: Int) {
-        val c = codec ?: return
+    /** Hands data to the decoder; false if it had no room. */
+    private fun queue(data: ByteArray, ptsUs: Long, flags: Int): Boolean {
+        val c = codec ?: return false
         val index = c.dequeueInputBuffer(20_000)
-        if (index < 0) return // decoder saturated: drop (the next keyframe heals)
-        val buf = c.getInputBuffer(index) ?: return
+        if (index < 0) return false // decoder saturated: drop (the next keyframe heals)
+        val buf = c.getInputBuffer(index) ?: return false
         buf.clear()
         buf.put(data)
         c.queueInputBuffer(index, 0, data.size, ptsUs, flags)
+        return true
     }
 
-    /** Renders every decoded frame immediately. */
-    private fun drain() {
+    /**
+     * Renders every decoded frame immediately, waiting up to [waitUs] for
+     * the first one.
+     */
+    private fun drain(waitUs: Long) {
         val c = codec ?: return
+        var wait = waitUs
         while (true) {
-            val index = c.dequeueOutputBuffer(info, 0)
-            if (index < 0) return // try-again, format or buffers changed
+            val index = c.dequeueOutputBuffer(info, wait)
+            if (index == MediaCodec.INFO_TRY_AGAIN_LATER) return
+            if (index < 0) continue // format or buffers changed: keep going
             c.releaseOutputBuffer(index, true)
             // presentationTimeUs carries the computer's capture time.
             session.framePresented(info.presentationTimeUs.toULong())
+            if (pending > 0) pending--
+            wait = 0
         }
     }
 
     private fun release() {
         codec?.let { runCatching { it.stop() }; runCatching { it.release() } }
         codec = null
+        pending = 0
         width = 0; height = 0
     }
 
@@ -144,6 +161,9 @@ class VideoDecoder(private val session: Session, private val surface: Surface) {
         nals.fold(ByteArray(0)) { acc, n -> acc + d.copyOfRange(n.start, n.end) }
 
     companion object {
+        /** Longest wait for a frame to come out of the decoder (µs). */
+        private const val OUTPUT_WAIT_US = 25_000L
+
         /**
          * The screen size plus the largest picture this device's H.264
          * decoder accepts, which the computer must not exceed. Many tablets
