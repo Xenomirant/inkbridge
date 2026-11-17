@@ -1,6 +1,8 @@
 package org.inkbridge.android
 
+import android.content.Context
 import android.graphics.Color
+import android.net.wifi.WifiManager
 import android.os.Bundle
 import android.view.Gravity
 import android.view.SurfaceHolder
@@ -21,6 +23,17 @@ class PadActivity : ComponentActivity() {
     private lateinit var info: TextView
     private lateinit var pad: PenPadView
     private var decoder: VideoDecoder? = null
+
+    /**
+     * Stops the Wi-Fi radio from sleeping between packets while the pad is
+     * on screen. Without it the first frames after a pause arrive up to a
+     * few hundred milliseconds late.
+     */
+    private val wifiLock by lazy {
+        (applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager)
+            .createWifiLock(WifiManager.WIFI_MODE_FULL_LOW_LATENCY, "inkbridge:pad")
+            .apply { setReferenceCounted(false) }
+    }
     private val ticker = object : Runnable {
         override fun run() {
             val s = SessionHolder.session
@@ -142,11 +155,13 @@ class PadActivity : ComponentActivity() {
 
     override fun onStart() {
         super.onStart()
+        runCatching { wifiLock.acquire() }
         info.post(ticker)
     }
 
     override fun onStop() {
         super.onStop()
+        runCatching { wifiLock.release() }
         info.removeCallbacks(ticker)
     }
 
