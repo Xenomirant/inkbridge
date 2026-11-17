@@ -56,11 +56,12 @@ class VideoDecoder(private val session: Session, private val surface: Surface) {
             // While the decoder still holds a frame, come back quickly to
             // show it: otherwise it would wait for the next frame to arrive,
             // which on a still screen can be much later.
-            val frame = session.nextVideoFrame(if (pending > 0) 4u else 100u)
             try {
+                val frame = session.nextVideoFrame(if (pending > 0) 4u else 100u)
                 if (frame == null) { drain(0); continue }
                 decode(frame)
             } catch (e: Exception) {
+                if (!running) return
                 Log.w(TAG, "decoder error, resynchronising", e)
                 release()
                 session.requestKeyframe()

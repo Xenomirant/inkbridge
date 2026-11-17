@@ -72,7 +72,9 @@ Still to do for M4:
 - When the Wi-Fi stalls, the picture freezes until the reliable video stream catches up (the p95
   above). The pipeline now skips frames before encoding instead of sending keyframes, but a stall of
   the link itself still shows.
-- The app doesn't reconnect by itself when the host restarts; the user has to tap Connect again.
+- Reconnecting: the pad reconnects by itself over Wi-Fi when the connection drops (host restarted,
+  Wi-Fi blinked), and the host lets a reconnecting tablet replace its dead session at once. Over USB
+  the user still goes back to the home screen.
 - `cargo deny check` hasn't been run on the Mac (not installed there), so the licences of the `objc2`
   crates are unchecked.
 - `docs/latency.md` with measured end-to-end numbers (Wi-Fi vs USB, RTX vs iGPU) is still to write.

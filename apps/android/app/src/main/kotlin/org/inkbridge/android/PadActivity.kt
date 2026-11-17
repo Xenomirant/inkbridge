@@ -16,6 +16,7 @@ import androidx.activity.OnBackPressedCallback
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import kotlin.concurrent.thread
 
 /** Full-screen writing pad bound to the live session. */
 class PadActivity : ComponentActivity() {
@@ -23,6 +24,12 @@ class PadActivity : ComponentActivity() {
     private lateinit var info: TextView
     private lateinit var pad: PenPadView
     private var decoder: VideoDecoder? = null
+
+    /**
+     * The session this screen was built around. Its views and decoder use
+     * it until they are gone, so it is freed in [onDestroy], not earlier.
+     */
+    private var own: org.inkbridge.core.Session? = null
 
     /**
      * Stops the Wi-Fi radio from sleeping between packets while the pad is
@@ -38,9 +45,15 @@ class PadActivity : ComponentActivity() {
     private val ticker = object : Runnable {
         override fun run() {
             val s = SessionHolder.session
-            if (s == null || !s.isConnected()) {
+            if (s == null) {
                 info.text = "Disconnected"
                 info.setTextColor(Color.RED)
+                return
+            }
+            if (!s.isConnected()) {
+                info.text = if (s.host().usb) "Disconnected" else "Connection lost, reconnecting…"
+                info.setTextColor(Color.RED)
+                if (!s.host().usb) reconnect()
                 return
             }
             val host = s.host()
@@ -63,6 +76,7 @@ class PadActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val session = SessionHolder.session ?: run { finish(); return }
+        own = session
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
         pad = PenPadView(this, session)
@@ -113,7 +127,7 @@ class PadActivity : ComponentActivity() {
 
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
-                SessionHolder.close()
+                SessionHolder.session = null
                 finish()
             }
         })
@@ -155,6 +169,54 @@ class PadActivity : ComponentActivity() {
         })
     }
 
+    @Volatile private var reconnecting = false
+
+    /**
+     * The connection dropped (the computer's app restarted, Wi-Fi blinked):
+     * keep trying to get it back while the pad is on screen, then rebuild
+     * the pad around the new session. Wi-Fi only: over USB the computer
+     * dials the tablet, which the home screen handles.
+     */
+    private fun reconnect() {
+        if (reconnecting) return
+        val code = SessionHolder.code ?: return
+        val dead = SessionHolder.session ?: return
+        val identity = runCatching { Storage(this).identity() }.getOrNull() ?: return
+        val metrics = resources.displayMetrics
+        reconnecting = true
+        thread(name = "inkbridge-reconnect") {
+            var fresh: org.inkbridge.core.Session? = null
+            while (reconnecting && fresh == null) {
+                fresh = runCatching {
+                    org.inkbridge.core.Session.connect(
+                        code, identity, deviceName(), false,
+                        VideoDecoder.screen(metrics.widthPixels, metrics.heightPixels),
+                    )
+                }.getOrNull()
+                if (fresh == null) Thread.sleep(RETRY_MS)
+            }
+            val session = fresh ?: return@thread
+            runOnUiThread {
+                // Only if the pad is still showing the session that dropped.
+                if (reconnecting && SessionHolder.session === dead) {
+                    SessionHolder.session = session
+                    recreate()
+                } else {
+                    SessionHolder.release(session)
+                }
+                reconnecting = false
+            }
+        }
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        decoder?.stop(); decoder = null
+        // Left by Back, or replaced after a reconnect.
+        own?.let { if (SessionHolder.session !== it) SessionHolder.release(it) }
+        own = null
+    }
+
     override fun onStart() {
         super.onStart()
         runCatching { wifiLock.acquire() }
@@ -165,6 +227,11 @@ class PadActivity : ComponentActivity() {
         super.onStop()
         runCatching { wifiLock.release() }
         info.removeCallbacks(ticker)
+        reconnecting = false
+    }
+
+    private companion object {
+        const val RETRY_MS = 1000L
     }
 
     private fun hideSystemBars() {

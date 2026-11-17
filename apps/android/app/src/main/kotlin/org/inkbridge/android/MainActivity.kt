@@ -185,6 +185,7 @@ class MainActivity : ComponentActivity() {
         storage.remember(code, host.name)
         SessionHolder.close()
         SessionHolder.session = session
+        SessionHolder.code = code
         status.text = "Connected to ${host.name}" + if (host.usb) " over USB" else ""
         startActivity(Intent(this, PadActivity::class.java))
     }
@@ -197,7 +198,8 @@ class MainActivity : ComponentActivity() {
         }
         refresh()
     }
-
-    private fun deviceName(): String =
-        "${Build.MANUFACTURER} ${Build.MODEL}".trim().replaceFirstChar { it.uppercase() }
 }
+
+/** This tablet's name as the computer shows it. */
+internal fun deviceName(): String =
+    "${Build.MANUFACTURER} ${Build.MODEL}".trim().replaceFirstChar { it.uppercase() }

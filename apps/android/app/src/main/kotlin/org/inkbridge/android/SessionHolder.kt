@@ -8,10 +8,19 @@ object SessionHolder {
     @Volatile
     var session: Session? = null
 
-    /** Ends the session in the background (disconnect briefly blocks). */
+    /** The pairing code the session was made with, to connect again if it drops. */
+    @Volatile
+    var code: String? = null
+
+    /** Ends the current session in the background (disconnect briefly blocks). */
     fun close() {
         val s = session ?: return
         session = null
+        release(s)
+    }
+
+    /** Ends and frees a session nothing uses any more. */
+    fun release(s: Session) {
         thread(name = "inkbridge-disconnect") {
             runCatching { s.disconnect() }
             s.close() // free the native session
