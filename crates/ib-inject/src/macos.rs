@@ -35,7 +35,11 @@ const CAPABILITIES: i64 = 0x0001 | 0x0002 | 0x0004 | 0x0040 | 0x0080 | 0x0100 | 
 /// Main display: bounds in physical pixels and the pixels-per-point scale
 /// (2.0 on Retina panels in their default mode).
 pub fn main_display() -> (Region, f64) {
-    let id = CGMainDisplayID();
+    display(CGMainDisplayID())
+}
+
+/// The same for any display, by its Core Graphics id.
+fn display(id: u32) -> (Region, f64) {
     let points = CGDisplayBounds(id).size;
     let mode = CGDisplayCopyDisplayMode(id);
     let mode = mode.as_deref();
@@ -100,8 +104,10 @@ fn whole_units(acc: &mut f64, delta: f64) -> i32 {
 
 #[derive(Debug)]
 pub struct MacPenSink {
-    /// Physical pixels per point of the main display.
+    /// Physical pixels per point of the display the pen works on.
     scale: f64,
+    /// That display's top-left corner in global points.
+    origin: CGPoint,
     tracker: PenTracker,
     /// Tool announced by the last proximity-enter event, if in proximity.
     proximity: Option<Tool>,
@@ -174,9 +180,18 @@ impl MacPenSink {
         Self::with_scale(main_display().1)
     }
 
+    /// A pen for another display than the main one: desktop pixels are
+    /// then relative to that display's top-left corner.
+    pub fn on_display(id: u32) -> Self {
+        let mut sink = Self::with_scale(display(id).1);
+        sink.origin = CGDisplayBounds(id).origin;
+        sink
+    }
+
     fn with_scale(scale: f64) -> Self {
         Self {
             scale: if scale > 0.0 { scale } else { 1.0 },
+            origin: CGPoint { x: 0.0, y: 0.0 },
             tracker: PenTracker::new(),
             proximity: None,
             right: false,
@@ -189,8 +204,8 @@ impl MacPenSink {
     /// Desktop pixels to global display points.
     fn to_points(&self, at: DesktopPoint) -> CGPoint {
         CGPoint {
-            x: at.x / self.scale,
-            y: at.y / self.scale,
+            x: self.origin.x + at.x / self.scale,
+            y: self.origin.y + at.y / self.scale,
         }
     }
 
@@ -406,6 +421,14 @@ mod tests {
             y: 982.0,
         });
         assert!((p.x - 1512.0).abs() < f64::EPSILON && (p.y - 491.0).abs() < f64::EPSILON);
+        // A display to the left of and above the main one.
+        let mut second = MacPenSink::with_scale(1.0);
+        second.origin = CGPoint {
+            x: -2560.0,
+            y: -300.0,
+        };
+        let p = second.to_points(DesktopPoint { x: 100.0, y: 50.0 });
+        assert!((p.x + 2460.0).abs() < f64::EPSILON && (p.y + 250.0).abs() < f64::EPSILON);
         let unscaled = MacPenSink::with_scale(0.0).to_points(DesktopPoint { x: 7.0, y: 9.0 });
         assert!((unscaled.x - 7.0).abs() < f64::EPSILON);
     }

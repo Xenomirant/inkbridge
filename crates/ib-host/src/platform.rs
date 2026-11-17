@@ -177,6 +177,10 @@ pub fn explain_permissions() {
 /// The pen backend. Linux: the uinput virtual tablet (pressure; Advanced
 /// option), else on Wayland the portal pointer (no setup, no pressure).
 pub fn pen_sink(desktop: Region) -> Result<Box<dyn ib_inject::PenSink>, ib_inject::InjectError> {
+    #[cfg(target_os = "macos")]
+    if let Some(id) = DISPLAY.get().and_then(|&id| u32::try_from(id).ok()) {
+        return Ok(Box::new(ib_inject::MacPenSink::on_display(id)));
+    }
     let sink = ib_inject::platform_sink(desktop);
     #[cfg(all(target_os = "linux", feature = "wayland"))]
     if sink.is_err()
@@ -187,6 +191,80 @@ pub fn pen_sink(desktop: Region) -> Result<Box<dyn ib_inject::PenSink>, ib_injec
         return Ok(s);
     }
     sink
+}
+
+/// The display chosen with `--display`, if it isn't the main one.
+static DISPLAY: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+
+/// The displays the host could show, main display first.
+pub fn displays() -> Vec<ib_capture::Display> {
+    #[cfg(target_os = "macos")]
+    {
+        ib_capture::mac_displays()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        vec![ib_capture::Display {
+            id: 0,
+            name: "Main display".into(),
+            bounds: primary_display(),
+            primary: true,
+        }]
+    }
+}
+
+/// One line per display for `--list-displays`, numbered as `--display` counts.
+pub fn describe_displays() -> String {
+    let lines: Vec<String> = displays()
+        .iter()
+        .enumerate()
+        .map(|(i, d)| {
+            format!(
+                "{}: {}, {}x{}{}",
+                i + 1,
+                d.name,
+                d.bounds.width,
+                d.bounds.height,
+                if d.primary { " (main)" } else { "" }
+            )
+        })
+        .collect();
+    lines.join("\n")
+}
+
+/// Makes display `number` (1-based, as listed) the one this host shows and
+/// draws on, and returns its size. Call once, before the pen and capture
+/// backends are made.
+pub fn select_display(number: usize) -> anyhow::Result<Region> {
+    let all = displays();
+    let Some(display) = number.checked_sub(1).and_then(|i| all.get(i)) else {
+        anyhow::bail!(
+            "there is no display {number}. Connected displays:\n{}",
+            describe_displays()
+        );
+    };
+    if !display.primary {
+        anyhow::ensure!(
+            cfg!(target_os = "macos"),
+            "choosing a display works on macOS only so far"
+        );
+        let _ = DISPLAY.set(display.id);
+    }
+    Ok(display.bounds)
+}
+
+/// macOS screen capture on the chosen display.
+#[cfg(target_os = "macos")]
+pub fn mac_source(gpu: bool) -> Result<ib_capture::MacScreenSource, ib_capture::CaptureError> {
+    let source = if gpu {
+        ib_capture::MacScreenSource::new_gpu()?
+    } else {
+        ib_capture::MacScreenSource::new()?
+    };
+    match DISPLAY.get() {
+        Some(&id) => source.on_display(id),
+        None => Ok(source),
+    }
 }
 
 /// Bounds of the primary display in physical pixels.
@@ -245,4 +323,25 @@ pub fn host_name() -> String {
     std::env::var("COMPUTERNAME")
         .or_else(|_| std::env::var("HOSTNAME"))
         .unwrap_or_else(|_| "Inkbridge host".into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_display_number_that_is_not_listed_is_refused() {
+        assert!(select_display(0).is_err());
+        let e = select_display(99).unwrap_err().to_string();
+        assert!(e.contains("there is no display 99"), "{e}");
+    }
+
+    #[test]
+    fn displays_are_numbered_from_one_with_the_main_one_first() {
+        let all = displays();
+        if let Some(first) = all.first() {
+            assert!(first.primary);
+            assert!(describe_displays().starts_with("1: "));
+        }
+    }
 }

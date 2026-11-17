@@ -1,7 +1,8 @@
 //! `inkbridge-host`: command-line host for M1 (pen input, no video yet).
 //!
-//! Usage: `inkbridge-host [--port N] [--pair] [--fake-sink]`
+//! Usage: `inkbridge-host [--port N] [--pair] [--display N] [--fake-sink]`
 //! - `--pair`: open pairing even if tablets are already paired;
+//! - `--display N`: show and draw on display N of `--list-displays`;
 //! - `--fake-sink`: log pen events instead of injecting them (testing).
 
 use std::net::{Ipv6Addr, SocketAddr};
@@ -20,6 +21,8 @@ struct Args {
     port: u16,
     force_pairing: bool,
     fake_sink: bool,
+    /// Display to show, numbered from 1 as `--list-displays` prints them.
+    display: Option<usize>,
 }
 
 fn parse_args() -> anyhow::Result<Args> {
@@ -27,6 +30,7 @@ fn parse_args() -> anyhow::Result<Args> {
         port: DEFAULT_PORT,
         force_pairing: false,
         fake_sink: false,
+        display: None,
     };
     let mut it = std::env::args().skip(1);
     while let Some(a) = it.next() {
@@ -38,6 +42,17 @@ fn parse_args() -> anyhow::Result<Args> {
                     .parse()?;
             }
             "--pair" => args.force_pairing = true,
+            "--display" => {
+                args.display = Some(
+                    it.next()
+                        .ok_or_else(|| anyhow::anyhow!("--display needs a number"))?
+                        .parse()?,
+                );
+            }
+            "--list-displays" => {
+                println!("{}", platform::describe_displays());
+                std::process::exit(0);
+            }
             "--fake-sink" => args.fake_sink = true,
             "--fix-usb-routing" => std::process::exit(run_routing(true)),
             "--undo-usb-routing" => std::process::exit(run_routing(false)),
@@ -56,7 +71,8 @@ fn parse_args() -> anyhow::Result<Args> {
             "--remove-uinput-setup" => std::process::exit(run_uinput(false)),
             "-h" | "--help" => {
                 println!(
-                    "inkbridge-host [--port N] [--pair] [--fake-sink]\n\
+                    "inkbridge-host [--port N] [--pair] [--display N] [--fake-sink]\n\
+                     inkbridge-host --list-displays      number the connected displays for --display\n\
                      inkbridge-host --fix-usb-routing    keep internet traffic off USB-tethered tablets (asks for admin once)\n\
                      inkbridge-host --undo-usb-routing   restore Windows' automatic routing for them\n\
                      inkbridge-host --setup-uinput       Linux: allow pen pressure via a virtual tablet (asks for admin once)\n\
@@ -166,7 +182,10 @@ async fn main() -> anyhow::Result<()> {
             tracing::warn!("Wayland screen sharing unavailable: {e:#}");
         }
     }
-    let region = platform::primary_display();
+    let region = match args.display {
+        Some(number) => platform::select_display(number)?,
+        None => platform::primary_display(),
+    };
     platform::explain_permissions();
 
     let make_sink: SinkFactory = if args.fake_sink {

@@ -67,7 +67,7 @@ impl VideoPipeline {
         // macOS: the system's pixel buffers go to VideoToolbox as they are.
         #[cfg(target_os = "macos")]
         {
-            let fallback: SourceFactory = Box::new(|| match ib_capture::MacScreenSource::new() {
+            let fallback: SourceFactory = Box::new(|| match crate::platform::mac_source(false) {
                 Ok(source) => Box::new(source),
                 Err(e) => {
                     tracing::error!("screen capture: {e}");
@@ -75,7 +75,7 @@ impl VideoPipeline {
                 }
             });
             Self::start_with(
-                Box::new(ib_capture::MacScreenSource::new_gpu()?),
+                Box::new(crate::platform::mac_source(true)?),
                 Some(fallback),
                 region,
                 client_max,

@@ -21,8 +21,9 @@ use objc2::runtime::ProtocolObject;
 use objc2::{AllocAnyThread, DefinedClass, define_class, msg_send};
 use objc2_core_foundation::{CGPoint, CGRect, CGSize};
 use objc2_core_graphics::{
-    CGDisplayBounds, CGDisplayCopyDisplayMode, CGDisplayMode, CGMainDisplayID,
-    CGPreflightScreenCaptureAccess, CGRequestScreenCaptureAccess,
+    CGDisplayBounds, CGDisplayCopyDisplayMode, CGDisplayIsBuiltin, CGDisplayMode, CGError,
+    CGGetActiveDisplayList, CGMainDisplayID, CGPreflightScreenCaptureAccess,
+    CGRequestScreenCaptureAccess,
 };
 use objc2_core_media::{CMSampleBuffer, CMTime};
 use objc2_core_video::{
@@ -152,9 +153,9 @@ fn copy_frame(sample: &CMSampleBuffer, capture_t_us: u64) -> Option<Frame> {
     })
 }
 
-/// Main display: id, bounds in physical pixels and pixels per point.
-fn main_display() -> (u32, Region, f64) {
-    let id = CGMainDisplayID();
+/// A display's size in physical pixels and its pixels per point. The
+/// bounds start at (0, 0): regions are relative to the display they are on.
+fn display_info(id: u32) -> (Region, f64) {
     let points = CGDisplayBounds(id).size;
     let mode = CGDisplayCopyDisplayMode(id);
     let mode = mode.as_deref();
@@ -173,7 +174,36 @@ fn main_display() -> (u32, Region, f64) {
         width: u32::try_from(w).unwrap_or(0),
         height: u32::try_from(h).unwrap_or(0),
     };
-    (id, bounds, scale)
+    (bounds, scale)
+}
+
+/// The displays in use, main display first. Needs no permission.
+pub fn mac_displays() -> Vec<Display> {
+    let mut ids = [0u32; 16];
+    let mut count = 0u32;
+    // SAFETY: the buffer holds `ids.len()` ids and `count` is a valid out pointer.
+    let listed =
+        unsafe { CGGetActiveDisplayList(ids.len() as u32, ids.as_mut_ptr(), &raw mut count) };
+    if listed != CGError::Success {
+        count = 0;
+    }
+    let main = CGMainDisplayID();
+    let mut displays: Vec<Display> = ids[..count as usize]
+        .iter()
+        .map(|&id| Display {
+            id: u64::from(id),
+            name: if CGDisplayIsBuiltin(id) {
+                "Built-in display".into()
+            } else {
+                "External display".into()
+            },
+            bounds: display_info(id).0,
+            primary: id == main,
+        })
+        .filter(|d| d.bounds.width > 0 && d.bounds.height > 0)
+        .collect();
+    displays.sort_by_key(|d| !d.primary);
+    displays
 }
 
 /// Keeps `region` inside `bounds` with at least 2×2 pixels.
@@ -212,7 +242,7 @@ fn describe(error: *mut NSError) -> Option<String> {
     unsafe { error.as_ref() }.map(|e| e.localizedDescription().to_string())
 }
 
-/// Asks ScreenCaptureKit for the main display (blocks until it answers).
+/// Asks ScreenCaptureKit for a display (blocks until it answers).
 fn find_display(id: u32) -> Result<Retained<SCDisplay>, CaptureError> {
     let (tx, rx) = mpsc::channel();
     let handler = RcBlock::new(
@@ -226,7 +256,7 @@ fn find_display(id: u32) -> Result<Retained<SCDisplay>, CaptureError> {
                         .find(|d| unsafe { d.displayID() } == id)
                 })
                 .map(Sendable)
-                .ok_or_else(|| describe(error).unwrap_or_else(|| "main display not found".into()));
+                .ok_or_else(|| describe(error).unwrap_or_else(|| "display not found".into()));
             let _ = tx.send(found);
         },
     );
@@ -291,7 +321,8 @@ impl MacScreenSource {
                     .into(),
             ));
         }
-        let (display_id, bounds, scale) = main_display();
+        let display_id = CGMainDisplayID();
+        let (bounds, scale) = display_info(display_id);
         if bounds.width == 0 || bounds.height == 0 {
             return Err(CaptureError::Unavailable("no display found".into()));
         }
@@ -312,6 +343,18 @@ impl MacScreenSource {
         let mut source = Self::new()?;
         source.gpu = true;
         Ok(source)
+    }
+
+    /// Captures the display with this id (from [`mac_displays`]) instead
+    /// of the main one.
+    pub fn on_display(mut self, id: u64) -> Result<Self, CaptureError> {
+        let id = u32::try_from(id)
+            .ok()
+            .filter(|id| mac_displays().iter().any(|d| d.id == u64::from(*id)))
+            .ok_or_else(|| CaptureError::Unavailable("that display is not connected".into()))?;
+        (self.bounds, self.scale) = display_info(id);
+        self.display_id = id;
+        Ok(self)
     }
 
     fn stop(&mut self) {
@@ -337,12 +380,7 @@ impl ScreenSource for MacScreenSource {
     }
 
     fn displays(&self) -> Result<Vec<Display>, CaptureError> {
-        Ok(vec![Display {
-            id: u64::from(self.display_id),
-            name: "Main display".into(),
-            bounds: self.bounds,
-            primary: true,
-        }])
+        Ok(mac_displays())
     }
 
     fn start(&mut self, region: Region) -> Result<(), CaptureError> {

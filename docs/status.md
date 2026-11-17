@@ -47,6 +47,10 @@ Implemented on the MacBook (Apple silicon, macOS 27), tested with the TB331FC ov
   frame spends in the decoder from about 60 ms to 15 ms. It also holds a low-latency Wi-Fi lock while
   the pad is shown. `adb logcat -s Inkbridge:D InkbridgeVideo:D` prints the overlay figures and decode
   times.
+- **Choosing a display:** `inkbridge-host --list-displays` numbers the connected displays and
+  `--display N` shows and draws on that one (macOS only so far; Windows and Linux keep the main
+  display). Regions stay relative to the chosen display; the pen sink adds its origin. Seen on the
+  tablet with an external 2560x1440 monitor. Not done: switching displays from the tablet.
 - **Permissions:** asked when needed, with an explanation: Screen Recording when a tablet first
   connects, Accessibility at the first pen touch.
 - **Bindings:** the `objc2` crate family (generated from Apple's headers) for all three backends.
