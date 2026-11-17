@@ -246,6 +246,12 @@ impl std::fmt::Debug for MacScreenSource {
     }
 }
 
+/// Whether macOS lets this process capture the screen (the Screen Recording
+/// permission). Never shows a prompt.
+pub fn screen_access_granted() -> bool {
+    CGPreflightScreenCaptureAccess()
+}
+
 impl MacScreenSource {
     /// Fails with a fix for the user when the Screen Recording permission
     /// is missing, and asks macOS to show its prompt.
@@ -255,8 +261,8 @@ impl MacScreenSource {
             // after the host is restarted.
             CGRequestScreenCaptureAccess();
             return Err(CaptureError::PermissionDenied(
-                "macOS needs the Screen Recording permission to show the screen on the tablet. \
-                 Allow it in System Settings > Privacy & Security > Screen & System Audio \
+                "macOS is asking for the Screen Recording permission, which Inkbridge uses only \
+                 to show this screen on your tablet (no audio, nothing is stored). Allow it in System Settings > Privacy & Security > Screen & System Audio \
                  Recording for the app that runs inkbridge-host (your terminal app), then start \
                  the host again"
                     .into(),

@@ -167,6 +167,7 @@ async fn main() -> anyhow::Result<()> {
         }
     }
     let region = platform::primary_display();
+    platform::explain_permissions();
 
     let make_sink: SinkFactory = if args.fake_sink {
         Box::new(|| Ok(Box::new(LoggingSink(FakePenSink::default())) as Box<dyn PenSink>))
@@ -195,7 +196,7 @@ async fn main() -> anyhow::Result<()> {
         bind,
         region,
         pen_features: features,
-        video: platform::capture_source().is_ok(),
+        video: platform::video_supported(),
     };
     let host = Host::new(identity, config, store, pen_tx.clone())?;
     tracing::info!(addr = %host.local_addr()?, ?region, config = %dir.display(), "host listening");

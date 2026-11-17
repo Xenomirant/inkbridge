@@ -18,6 +18,8 @@ use objc2_core_graphics::{
     CGPreflightPostEventAccess, CGRequestPostEventAccess, CGScrollEventUnit,
 };
 
+use std::time::{Duration, Instant};
+
 use crate::tracker::{PenTracker, Step};
 use crate::{InjectError, PenSink};
 
@@ -107,24 +109,69 @@ pub struct MacPenSink {
     right: bool,
     last: CGPoint,
     scroll_carry: (f64, f64),
+    access: Access,
+}
+
+/// Whether macOS lets this process post input events (the Accessibility
+/// permission). Never shows a prompt.
+pub fn pen_access_granted() -> bool {
+    CGPreflightPostEventAccess()
+}
+
+/// How often a missing permission is checked again while the pen is used.
+const ACCESS_RECHECK: Duration = Duration::from_secs(1);
+
+/// The Accessibility permission, asked for when the pen is first used
+/// rather than when the host starts.
+#[derive(Debug, Default)]
+struct Access {
+    granted: bool,
+    asked: bool,
+    checked: Option<Instant>,
+}
+
+impl Access {
+    /// `Ok(true)`: events may be posted. `Ok(false)`: not yet, drop the
+    /// event quietly. `Err`: the system prompt was just shown (once).
+    fn ready(&mut self) -> Result<bool, InjectError> {
+        if self.granted {
+            return Ok(true);
+        }
+        if self.checked.is_some_and(|t| t.elapsed() < ACCESS_RECHECK) {
+            return Ok(false);
+        }
+        self.checked = Some(Instant::now());
+        if pen_access_granted() {
+            self.granted = true;
+            return Ok(true);
+        }
+        if self.asked {
+            return Ok(false);
+        }
+        self.asked = true;
+        // Shows the system prompt (once per app).
+        CGRequestPostEventAccess();
+        Err(InjectError::Unavailable(
+            "macOS is asking for the Accessibility permission, which Inkbridge uses only to \
+             move the pointer and draw with your pen. Allow it in System Settings > Privacy & \
+             Security > Accessibility for the app that runs inkbridge-host (your terminal app). \
+             If the pen still does nothing afterwards, start the host again"
+                .into(),
+        ))
+    }
+}
+
+impl Default for MacPenSink {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl MacPenSink {
-    /// Fails with a fix for the user when the Accessibility permission is
-    /// missing, and asks macOS to show its prompt.
-    pub fn new() -> Result<Self, InjectError> {
-        if !CGPreflightPostEventAccess() {
-            // Shows the system prompt (once per app); the grant applies
-            // after the host is restarted.
-            CGRequestPostEventAccess();
-            return Err(InjectError::Unavailable(
-                "macOS needs the Accessibility permission to move the pointer. Allow it in \
-                 System Settings > Privacy & Security > Accessibility for the app that runs \
-                 inkbridge-host (your terminal app), then start the host again"
-                    .into(),
-            ));
-        }
-        Ok(Self::with_scale(main_display().1))
+    /// Never prompts: the Accessibility permission is requested when the
+    /// first pen event arrives.
+    pub fn new() -> Self {
+        Self::with_scale(main_display().1)
     }
 
     fn with_scale(scale: f64) -> Self {
@@ -135,6 +182,7 @@ impl MacPenSink {
             right: false,
             last: CGPoint { x: 0.0, y: 0.0 },
             scroll_carry: (0.0, 0.0),
+            access: Access::default(),
         }
     }
 
@@ -264,12 +312,18 @@ impl PenSink for MacPenSink {
     }
 
     fn emit(&mut self, sample: &PenSample, at: DesktopPoint) -> Result<(), InjectError> {
+        if !self.access.ready()? {
+            return Ok(());
+        }
         self.last = self.to_points(at);
         let steps = self.tracker.step(sample.state);
         self.apply(&steps, sample)
     }
 
     fn scroll(&mut self, dx_px: f64, dy_px: f64) -> Result<(), InjectError> {
+        if !self.access.ready()? {
+            return Ok(());
+        }
         // Scroll-wheel events count in points; positive = content moves
         // down / right, the same as our convention.
         let dy = whole_units(&mut self.scroll_carry.1, dy_px / self.scale);
@@ -282,6 +336,9 @@ impl PenSink for MacPenSink {
     }
 
     fn move_pointer(&mut self, at: DesktopPoint) -> Result<(), InjectError> {
+        if !self.access.ready()? {
+            return Ok(());
+        }
         let event = CGEvent::new_mouse_event(
             None,
             CGEventType::MouseMoved,
@@ -391,7 +448,8 @@ mod tests {
     #[test]
     #[ignore = "moves the real pointer; needs the Accessibility permission"]
     fn posts_a_pressure_stroke() {
-        let mut sink = MacPenSink::new().expect("Accessibility permission");
+        assert!(pen_access_granted(), "Accessibility permission");
+        let mut sink = MacPenSink::new();
         let (region, _) = main_display();
         let (cx, cy) = (
             f64::from(region.width) / 2.0,

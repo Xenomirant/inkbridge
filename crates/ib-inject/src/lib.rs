@@ -21,7 +21,7 @@ mod windows;
 #[cfg(target_os = "linux")]
 pub use linux::UinputPenSink;
 #[cfg(target_os = "macos")]
-pub use macos::{MacPenSink, main_display};
+pub use macos::{MacPenSink, main_display, pen_access_granted};
 #[cfg(all(target_os = "linux", feature = "wayland"))]
 pub use portal::PortalPointerSink;
 pub use tracker::{PenTracker, Step};
@@ -54,7 +54,7 @@ pub fn platform_sink(desktop: ib_geometry::Region) -> Result<Box<dyn PenSink>, I
     #[cfg(target_os = "macos")]
     {
         let _ = desktop;
-        Ok(Box::new(MacPenSink::new()?))
+        Ok(Box::new(MacPenSink::new()))
     }
     #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
     {

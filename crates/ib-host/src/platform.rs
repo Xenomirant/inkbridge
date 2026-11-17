@@ -133,6 +133,47 @@ pub fn capture_source() -> Result<Box<dyn ib_capture::ScreenSource>, ib_capture:
     ib_capture::platform_source()
 }
 
+/// Whether sessions can stream the screen. On macOS this doesn't touch the
+/// capture backend, so the Screen Recording prompt appears when a tablet
+/// first connects rather than when the host starts.
+pub fn video_supported() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        true
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        capture_source().is_ok()
+    }
+}
+
+/// Tells the user, before macOS does, which permissions it will ask for
+/// and why. Prints nothing once they are granted.
+pub fn explain_permissions() {
+    #[cfg(target_os = "macos")]
+    {
+        let pen = !ib_inject::pen_access_granted();
+        let screen = !ib_capture::screen_access_granted();
+        if pen || screen {
+            println!("macOS will ask you to allow the following for the app that runs this host:");
+        }
+        if screen {
+            println!(
+                "  - Screen Recording, when your tablet connects: to show this screen on the \
+                 tablet. No audio is captured and nothing is stored."
+            );
+        }
+        if pen {
+            println!(
+                "  - Accessibility, when you first use the pen: to move the pointer and draw."
+            );
+        }
+        if pen || screen {
+            println!("Inkbridge sends the picture only to your paired tablet.\n");
+        }
+    }
+}
+
 /// The pen backend. Linux: the uinput virtual tablet (pressure; Advanced
 /// option), else on Wayland the portal pointer (no setup, no pressure).
 pub fn pen_sink(desktop: Region) -> Result<Box<dyn ib_inject::PenSink>, ib_inject::InjectError> {
