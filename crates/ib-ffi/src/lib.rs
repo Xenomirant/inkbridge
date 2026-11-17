@@ -65,6 +65,33 @@ pub struct PairingInfo {
     pub host_fingerprint: String,
 }
 
+/// The tablet's screen and what its video decoder can handle.
+#[derive(Debug, Clone, Copy, uniffi::Record)]
+pub struct ClientScreen {
+    pub width: u32,
+    pub height: u32,
+    /// Largest picture the H.264 decoder accepts: long and short side in
+    /// pixels (either orientation). 0 = unknown.
+    pub decode_long: u32,
+    pub decode_short: u32,
+}
+
+impl ClientScreen {
+    /// The largest useful picture as (long side, short side): never more
+    /// than the screen shows, never more than the decoder accepts.
+    fn max_video(self) -> (u32, u32) {
+        let screen = self.width.max(self.height);
+        let cap = |limit: u32| {
+            if limit == 0 {
+                screen
+            } else {
+                screen.min(limit)
+            }
+        };
+        (cap(self.decode_long), cap(self.decode_short))
+    }
+}
+
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct HostInfo {
     pub name: String,
@@ -330,8 +357,7 @@ impl Session {
         identity: DeviceIdentity,
         device_name: String,
         pair: bool,
-        screen_width: u32,
-        screen_height: u32,
+        screen: ClientScreen,
     ) -> Result<Arc<Self>, InkbridgeError> {
         let offer =
             PairingOffer::parse(&code).map_err(|e| InkbridgeError::InvalidCode(e.to_string()))?;
@@ -356,15 +382,7 @@ impl Session {
             Err(InkbridgeError::Unreachable(last_error))
         })?;
         let pairing = pair.then(|| (offer.secret.0, device_name.clone()));
-        Self::establish(
-            runtime,
-            keep,
-            connection,
-            device_name,
-            pairing,
-            screen_width,
-            screen_height,
-        )
+        Self::establish(runtime, keep, connection, device_name, pairing, screen)
     }
 
     /// USB: waits up to `timeout_ms` for the paired computer (from `code`)
@@ -378,8 +396,7 @@ impl Session {
         device_name: String,
         bind_ip: String,
         timeout_ms: u32,
-        screen_width: u32,
-        screen_height: u32,
+        screen: ClientScreen,
     ) -> Result<Arc<Self>, InkbridgeError> {
         let offer =
             PairingOffer::parse(&code).map_err(|e| InkbridgeError::InvalidCode(e.to_string()))?;
@@ -401,15 +418,7 @@ impl Session {
                 }
             }
         })?;
-        Self::establish(
-            runtime,
-            keep,
-            connection,
-            device_name,
-            None,
-            screen_width,
-            screen_height,
-        )
+        Self::establish(runtime, keep, connection, device_name, None, screen)
     }
 
     /// Host details; `region_*` reflect the current mapped desktop area.
@@ -629,8 +638,7 @@ impl Session {
         connection: Connection,
         device_name: String,
         pairing: Option<([u8; ib_protocol::PAIRING_SECRET_LEN], String)>,
-        screen_width: u32,
-        screen_height: u32,
+        screen: ClientScreen,
     ) -> Result<Arc<Self>, InkbridgeError> {
         let (control, hello) = runtime.block_on(async {
             let mut control = connection
@@ -643,8 +651,8 @@ impl Session {
                 caps: Capabilities {
                     // Every Android device decodes H.264 in hardware.
                     video_codecs: vec![VideoCodec::H264],
-                    max_width: screen_width.max(screen_height),
-                    max_height: screen_width.max(screen_height),
+                    max_width: screen.max_video().0,
+                    max_height: screen.max_video().1,
                     max_fps: 60,
                     pen: PenFeatures {
                         pressure: true,
@@ -655,8 +663,8 @@ impl Session {
                         barrel_button: true,
                     },
                 },
-                screen_width,
-                screen_height,
+                screen_width: screen.width,
+                screen_height: screen.height,
             };
             let host = client_handshake(&mut control, hello, pairing).await?;
             Ok::<_, InkbridgeError>((control, host))

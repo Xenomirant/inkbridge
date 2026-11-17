@@ -81,7 +81,7 @@ class MainActivity : ComponentActivity() {
                 val session = runCatching {
                     Session.acceptUsb(
                         code, identity, deviceName(), ip, 2000u,
-                        metrics.widthPixels.toUInt(), metrics.heightPixels.toUInt(),
+                        VideoDecoder.screen(metrics.widthPixels, metrics.heightPixels),
                     )
                 }.getOrNull() ?: continue
                 usbWatching = false
@@ -152,7 +152,7 @@ class MainActivity : ComponentActivity() {
             val result = runCatching {
                 Session.connect(
                     code, identity, deviceName(), pair,
-                    metrics.widthPixels.toUInt(), metrics.heightPixels.toUInt(),
+                    VideoDecoder.screen(metrics.widthPixels, metrics.heightPixels),
                 )
             }
             runOnUiThread {

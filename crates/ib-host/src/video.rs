@@ -119,8 +119,23 @@ impl Drop for VideoPipeline {
     }
 }
 
+/// The client's size limit (long side, short side) as (max width, max
+/// height) for a picture shaped like `region`.
+fn oriented_max(region: Region, client_max: (u32, u32)) -> (u32, u32) {
+    let (long, short) = (
+        client_max.0.max(client_max.1),
+        client_max.0.min(client_max.1),
+    );
+    if region.width >= region.height {
+        (long, short)
+    } else {
+        (short, long)
+    }
+}
+
 /// Encoder for the given capture region.
 fn encoder_for(region: Region, client_max: (u32, u32)) -> anyhow::Result<OpenH264Encoder> {
+    let client_max = oriented_max(region, client_max);
     let pixels = u64::from(region.width) * u64::from(region.height);
     let budget = if pixels > SOFTWARE_MAX_PIXELS {
         (SOFTWARE_MAX_PIXELS as f64 / pixels as f64).sqrt()
@@ -159,6 +174,7 @@ fn make_encoder(
         FrameData::Gpu(gpu) => {
             // Hardware: the tablet's full resolution, generous bitrate for sharp
             // text (≈10 bits/pixel/s, capped for Wi-Fi).
+            let client_max = oriented_max(region, client_max);
             let (width, height) =
                 fit_within(region.width, region.height, client_max.0, client_max.1);
             let bitrate_kbps =
@@ -203,6 +219,7 @@ fn vaapi_encoder(region: Region, client_max: (u32, u32)) -> Option<Box<dyn Video
     if VAAPI_UNAVAILABLE.load(std::sync::atomic::Ordering::Relaxed) {
         return None;
     }
+    let client_max = oriented_max(region, client_max);
     let (width, height) = fit_within(region.width, region.height, client_max.0, client_max.1);
     let bitrate_kbps =
         ((u64::from(width) * u64::from(height) * 10 / 1000) as u32).min(HARDWARE_MAX_KBPS);
@@ -541,6 +558,29 @@ mod tests {
         }
         assert!(got_key, "keyframe request must produce a keyframe");
         drop(p);
+    }
+
+    #[test]
+    fn decoder_limit_applies_to_the_long_and_short_side() {
+        let limit = (1920, 1088);
+        let region = |width, height| Region {
+            x: 0,
+            y: 0,
+            width,
+            height,
+        };
+        // A portrait strip and the full screen of a 3420x2214 display.
+        let portrait = oriented_max(region(1384, 2214), limit);
+        assert_eq!(portrait, (1088, 1920));
+        assert_eq!(fit_within(1384, 2214, portrait.0, portrait.1), (1088, 1740));
+        let landscape = oriented_max(region(3420, 2214), limit);
+        assert_eq!(landscape, (1920, 1088));
+        assert_eq!(
+            fit_within(3420, 2214, landscape.0, landscape.1),
+            (1680, 1088)
+        );
+        // Clients that send one number for both sides are unaffected.
+        assert_eq!(oriented_max(region(1384, 2214), (1920, 1920)), (1920, 1920));
     }
 
     #[test]

@@ -53,7 +53,10 @@ impl PenFeatures {
 pub struct Capabilities {
     /// In order of preference.
     pub video_codecs: Vec<VideoCodec>,
-    /// Largest frame the client can decode / the host will send, in pixels.
+    /// Largest frame the client can decode / the host will send, in pixels:
+    /// `max_width` limits the long side and `max_height` the short side,
+    /// whichever way the picture is oriented (hardware decoders limited to
+    /// 1920x1088 also take 1088x1920).
     pub max_width: u32,
     pub max_height: u32,
     pub max_fps: u16,

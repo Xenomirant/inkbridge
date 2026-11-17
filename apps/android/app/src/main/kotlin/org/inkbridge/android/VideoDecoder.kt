@@ -1,9 +1,11 @@
 package org.inkbridge.android
 
 import android.media.MediaCodec
+import android.media.MediaCodecList
 import android.media.MediaFormat
 import android.util.Log
 import android.view.Surface
+import org.inkbridge.core.ClientScreen
 import org.inkbridge.core.EncodedVideoFrame
 import org.inkbridge.core.Session
 
@@ -74,11 +76,20 @@ class VideoDecoder(private val session: Session, private val surface: Surface) {
         val format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, w, h).apply {
             setInteger(MediaFormat.KEY_LOW_LATENCY, 1)
             setInteger(MediaFormat.KEY_PRIORITY, 0) // real-time
+            // Some hardware decoders assume a 1920x1080 landscape limit unless
+            // told the picture size, and refuse to start for taller pictures.
+            setInteger(MediaFormat.KEY_MAX_WIDTH, w)
+            setInteger(MediaFormat.KEY_MAX_HEIGHT, h)
         }
-        return MediaCodec.createDecoderByType(MediaFormat.MIMETYPE_VIDEO_AVC).apply {
-            configure(format, surface, null, 0)
-            start()
+        val decoder = MediaCodec.createDecoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
+        try {
+            decoder.configure(format, surface, null, 0)
+            decoder.start()
+        } catch (e: Exception) {
+            decoder.release() // a failed decoder still holds a hardware instance
+            throw e
         }
+        return decoder
     }
 
     private fun queue(data: ByteArray, ptsUs: Long, flags: Int) {
@@ -132,9 +143,30 @@ class VideoDecoder(private val session: Session, private val surface: Surface) {
     private fun concat(d: ByteArray, nals: List<Nal>): ByteArray =
         nals.fold(ByteArray(0)) { acc, n -> acc + d.copyOfRange(n.start, n.end) }
 
-    private companion object {
-        const val TAG = "InkbridgeVideo"
-        const val NAL_SPS = 7
-        const val NAL_PPS = 8
+    companion object {
+        /**
+         * The screen size plus the largest picture this device's H.264
+         * decoder accepts, which the computer must not exceed. Many tablets
+         * stop at 1920x1088 (either way up) even with a larger screen.
+         */
+        fun screen(width: Int, height: Int): ClientScreen {
+            val limit = runCatching {
+                val codecs = MediaCodecList(MediaCodecList.REGULAR_CODECS)
+                val probe = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, 1280, 720)
+                val name = codecs.findDecoderForFormat(probe)
+                val video = codecs.codecInfos.first { it.name == name }
+                    .getCapabilitiesForType(MediaFormat.MIMETYPE_VIDEO_AVC).videoCapabilities
+                val long = video.supportedWidths.upper
+                long to video.getSupportedHeightsFor(long).upper
+            }.getOrNull()
+            val long = maxOf(limit?.first ?: 0, limit?.second ?: 0)
+            val short = minOf(limit?.first ?: 0, limit?.second ?: 0)
+            Log.i(TAG, "decoder limit ${long}x$short, screen ${width}x$height")
+            return ClientScreen(width.toUInt(), height.toUInt(), long.toUInt(), short.toUInt())
+        }
+
+        private const val TAG = "InkbridgeVideo"
+        private const val NAL_SPS = 7
+        private const val NAL_PPS = 8
     }
 }
