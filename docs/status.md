@@ -39,9 +39,14 @@ Implemented on the MacBook (Apple silicon, macOS 27), tested with the TB331FC ov
   to CPU capture + openh264 when no hardware encoder is available.
   Encode time for the full 3420x2214 screen at 1680x1088: about 6 ms (median) against 55 ms with
   openh264. Output verified with an independent decoder (`mac_pipeline_probe`).
-  On the tablet over campus Wi-Fi (jittery, 7-180 ms round trip): about 60 ms capture-to-screen
-  (median) against 258 ms with openh264, 57 fps while the screen moves. The p95 is far higher
-  (0.2-2 s) and follows the Wi-Fi, not the encoder. To repeat on a quiet network for `docs/latency.md`.
+  On the tablet over campus Wi-Fi: about 34 ms capture-to-screen (median) at 45-58 fps while the
+  screen moves, against 258 ms with openh264. Of that, encode with capture wait is 12 ms, network
+  5 ms, the tablet's decoder 15 ms. The p95 (40-150 ms) follows the Wi-Fi.
+- **Tablet decoder:** the app picks a decoder with the low-latency feature, runs it at full operating
+  rate and asks Qualcomm decoders for output in decode order. On the TB331FC this cut the time a
+  frame spends in the decoder from about 60 ms to 15 ms. It also holds a low-latency Wi-Fi lock while
+  the pad is shown. `adb logcat -s Inkbridge:D InkbridgeVideo:D` prints the overlay figures and decode
+  times.
 - **Permissions:** asked when needed, with an explanation: Screen Recording when a tablet first
   connects, Accessibility at the first pen touch.
 - **Bindings:** the `objc2` crate family (generated from Apple's headers) for all three backends.
