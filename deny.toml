@@ -4,6 +4,13 @@
 [advisories]
 version = 2
 yanked = "deny"
+ignore = [
+    # basic-toml is unmaintained (not vulnerable). It comes in only through
+    # uniffi_bindgen → askama at build time, parsing our own uniffi.toml.
+    # uniffi 0.32.2 / askama 0.16.1 are the latest releases; drop this when
+    # an update removes the dependency.
+    { id = "RUSTSEC-2026-0374", reason = "build-time only via uniffi_bindgen; no fixed release yet" },
+]
 
 [licenses]
 version = 2
