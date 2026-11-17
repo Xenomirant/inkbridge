@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 108 108">
+  <!-- Inkbridge app icon: an ink drop whose highlight is a bridge.
+       108x108 is Android's adaptive-icon canvas; the mark sits in the 66x66 safe zone. -->
+  <rect width="108" height="108" fill="#0b0b0c"/>
+  <path fill="#fff" fill-rule="evenodd" d="M54,25 C54,25 33,49 33,63 A21,21 0 0 0 75,63 C75,49 54,25 54,25 Z M41.5,70 A12.5,12.5 0 0 1 66.5,70 L61.5,70 A7.5,7.5 0 0 0 46.5,70 Z"/>
+</svg>

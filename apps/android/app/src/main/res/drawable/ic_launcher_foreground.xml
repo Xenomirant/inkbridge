@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- An ink drop whose highlight is a bridge. Source: apps/android/icon/inkbridge.svg -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Slightly smaller than the safe zone allows, for air around the mark. -->
+    <group
+        android:pivotX="54"
+        android:pivotY="54"
+        android:scaleX="0.84"
+        android:scaleY="0.84">
+    <path
+        android:fillColor="#FFFFFF"
+        android:fillType="evenOdd"
+        android:pathData="M54,25 C54,25 33,49 33,63 A21,21 0 0 0 75,63 C75,49 54,25 54,25 Z M41.5,70 A12.5,12.5 0 0 1 66.5,70 L61.5,70 A7.5,7.5 0 0 0 46.5,70 Z" />
+    </group>
+</vector>
