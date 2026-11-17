@@ -5,8 +5,9 @@
 //! permission, granted once in System Settings to the app that runs the
 //! host (the terminal app when started from a terminal).
 //!
-//! Frames are copied to CPU memory (BGRA) here; the zero-copy path hands the
-//! pixel buffer to VideoToolbox instead.
+//! [`MacScreenSource::new_gpu`] hands out the system's NV12 pixel buffers
+//! untouched for VideoToolbox (zero-copy). [`MacScreenSource::new`] copies
+//! BGRA pixels to CPU memory for the software encoder.
 
 use std::sync::mpsc;
 use std::sync::{Arc, Condvar, Mutex};
@@ -28,6 +29,7 @@ use objc2_core_video::{
     CVPixelBufferGetBaseAddress, CVPixelBufferGetBytesPerRow, CVPixelBufferGetHeight,
     CVPixelBufferGetWidth, CVPixelBufferLockBaseAddress, CVPixelBufferLockFlags,
     CVPixelBufferUnlockBaseAddress, kCVPixelFormatType_32BGRA,
+    kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
 };
 use objc2_foundation::{NSArray, NSError, NSObject, NSObjectProtocol};
 use objc2_screen_capture_kit::{
@@ -35,7 +37,7 @@ use objc2_screen_capture_kit::{
     SCStreamOutput, SCStreamOutputType,
 };
 
-use crate::{CaptureError, Display, Frame, FrameData, ScreenSource};
+use crate::{CaptureError, Display, Frame, FrameData, GpuFrame, ScreenSource};
 
 /// How long the system may take to list displays or start a stream.
 const SYSTEM_TIMEOUT: Duration = Duration::from_secs(5);
@@ -54,6 +56,7 @@ unsafe impl<T> Send for Sendable<T> {}
 
 struct OutputIvars {
     slot: Slot,
+    gpu: bool,
 }
 
 define_class!(
@@ -74,7 +77,12 @@ define_class!(
             }
             let capture_t_us = ib_clock::now_us();
             // Idle, blank and suspended samples carry no pixel buffer.
-            if let Some(frame) = copy_frame(sample, capture_t_us) {
+            let frame = if self.ivars().gpu {
+                gpu_frame(sample, capture_t_us)
+            } else {
+                copy_frame(sample, capture_t_us)
+            };
+            if let Some(frame) = frame {
                 let (lock, ready) = &*self.ivars().slot;
                 if let Ok(mut slot) = lock.lock() {
                     *slot = Some(frame);
@@ -86,11 +94,23 @@ define_class!(
 );
 
 impl StreamOutput {
-    fn new(slot: Slot) -> Retained<Self> {
-        let this = Self::alloc().set_ivars(OutputIvars { slot });
+    fn new(slot: Slot, gpu: bool) -> Retained<Self> {
+        let this = Self::alloc().set_ivars(OutputIvars { slot, gpu });
         // SAFETY: plain `-[NSObject init]` on a freshly allocated object.
         unsafe { msg_send![super(this), init] }
     }
+}
+
+/// Keeps the sample's pixel buffer as it is (no copy).
+fn gpu_frame(sample: &CMSampleBuffer, capture_t_us: u64) -> Option<Frame> {
+    // SAFETY: `sample` is a valid sample buffer for the duration of the callback.
+    let buffer = unsafe { sample.image_buffer() }?;
+    Some(Frame {
+        capture_t_us,
+        width: u32::try_from(CVPixelBufferGetWidth(&buffer)).ok()?,
+        height: u32::try_from(CVPixelBufferGetHeight(&buffer)).ok()?,
+        data: FrameData::Gpu(GpuFrame { buffer }),
+    })
 }
 
 /// Copies the sample's BGRA pixels into a tightly packed frame.
@@ -232,6 +252,9 @@ pub struct MacScreenSource {
     display_id: u32,
     bounds: Region,
     scale: f64,
+    gpu: bool,
+    /// Frame size the encoder asked for (GPU mode): the system scales.
+    output: Option<(u32, u32)>,
     slot: Slot,
     active: Option<Sendable<Active>>,
 }
@@ -276,9 +299,19 @@ impl MacScreenSource {
             display_id,
             bounds,
             scale,
+            gpu: false,
+            output: None,
             slot: Arc::default(),
             active: None,
         })
+    }
+
+    /// Like [`new`](Self::new), but frames stay on the GPU as NV12 pixel
+    /// buffers ([`FrameData::Gpu`]) for the VideoToolbox encoder.
+    pub fn new_gpu() -> Result<Self, CaptureError> {
+        let mut source = Self::new()?;
+        source.gpu = true;
+        Ok(source)
     }
 
     fn stop(&mut self) {
@@ -316,6 +349,10 @@ impl ScreenSource for MacScreenSource {
         self.stop();
         let region = clamp_region(region, self.bounds);
         let display = find_display(self.display_id)?;
+        let (width, height) = self
+            .output
+            .filter(|_| self.gpu)
+            .unwrap_or((region.width, region.height));
 
         // SAFETY: plain initialisers and property setters on valid objects.
         let stream = unsafe {
@@ -325,14 +362,21 @@ impl ScreenSource for MacScreenSource {
                 &NSArray::new(),
             );
             let config = SCStreamConfiguration::new();
-            config.setWidth(region.width as usize);
-            config.setHeight(region.height as usize);
+            config.setWidth(width as usize);
+            config.setHeight(height as usize);
             if region != self.bounds {
                 config.setSourceRect(source_rect(region, self.scale));
             }
-            config.setPixelFormat(kCVPixelFormatType_32BGRA);
+            if self.gpu {
+                config.setPixelFormat(kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange);
+                // The pipeline holds on to a few buffers (in the encoder, as
+                // the last frame, in the slot); leave the system some spare.
+                config.setQueueDepth(6);
+            } else {
+                config.setPixelFormat(kCVPixelFormatType_32BGRA);
+                config.setQueueDepth(3);
+            }
             config.setShowsCursor(true);
-            config.setQueueDepth(3);
             config.setMinimumFrameInterval(CMTime::new(1, MAX_FPS));
             SCStream::initWithFilter_configuration_delegate(
                 SCStream::alloc(),
@@ -341,7 +385,7 @@ impl ScreenSource for MacScreenSource {
                 None,
             )
         };
-        let output = StreamOutput::new(Arc::clone(&self.slot));
+        let output = StreamOutput::new(Arc::clone(&self.slot), self.gpu);
         let queue = DispatchQueue::new("org.inkbridge.capture", None);
         // SAFETY: `output` and `queue` outlive the stream (kept in `Active`).
         unsafe {
@@ -374,6 +418,10 @@ impl ScreenSource for MacScreenSource {
             _queue: queue,
         }));
         Ok(())
+    }
+
+    fn set_output_size(&mut self, size: Option<(u32, u32)>) {
+        self.output = size;
     }
 
     fn next_frame(&mut self, timeout: Duration) -> Result<Option<Frame>, CaptureError> {

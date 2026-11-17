@@ -73,8 +73,39 @@ pub struct GpuFrame {
 #[cfg(windows)]
 unsafe impl Send for GpuFrame {}
 
+/// macOS: an IOSurface-backed NV12 pixel buffer straight from
+/// ScreenCaptureKit, which VideoToolbox encodes without a CPU copy.
+#[cfg(target_os = "macos")]
+#[derive(Clone)]
+pub struct GpuFrame {
+    pub buffer: objc2_core_foundation::CFRetained<objc2_core_video::CVPixelBuffer>,
+}
+
+#[cfg(target_os = "macos")]
+impl std::fmt::Debug for GpuFrame {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GpuFrame").finish_non_exhaustive()
+    }
+}
+
+/// Two frames are equal when they are the same pixel buffer.
+#[cfg(target_os = "macos")]
+impl PartialEq for GpuFrame {
+    fn eq(&self, other: &Self) -> bool {
+        std::ptr::eq(&raw const *self.buffer, &raw const *other.buffer)
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl Eq for GpuFrame {}
+
+// SAFETY: pixel buffers are reference-counted with atomic counts and the
+// capture side never writes to one after handing it out.
+#[cfg(target_os = "macos")]
+unsafe impl Send for GpuFrame {}
+
 /// Other platforms have no GPU path yet.
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GpuFrame(());
 
@@ -94,6 +125,11 @@ pub trait ScreenSource: Send {
 
     /// Starts (or retargets) capture of `region`.
     fn start(&mut self, region: Region) -> Result<(), CaptureError>;
+
+    /// A hint for the next [`start`](Self::start): the size the encoder
+    /// wants. Backends where the system scales for free deliver frames of
+    /// that size; the others ignore it and deliver the region's own size.
+    fn set_output_size(&mut self, _size: Option<(u32, u32)>) {}
 
     /// Waits up to `timeout` for the next **changed** frame. `Ok(None)` means
     /// nothing changed, which is how a static screen costs zero bandwidth.

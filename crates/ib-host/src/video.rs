@@ -63,7 +63,25 @@ impl VideoPipeline {
                 out,
             )
         }
-        #[cfg(not(windows))]
+        // macOS: the system's pixel buffers go to VideoToolbox as they are.
+        #[cfg(target_os = "macos")]
+        {
+            let fallback: SourceFactory = Box::new(|| match ib_capture::MacScreenSource::new() {
+                Ok(source) => Box::new(source),
+                Err(e) => {
+                    tracing::error!("screen capture: {e}");
+                    Box::new(ib_capture::FakeScreenSource::default())
+                }
+            });
+            Self::start_with(
+                Box::new(ib_capture::MacScreenSource::new_gpu()?),
+                Some(fallback),
+                region,
+                client_max,
+                out,
+            )
+        }
+        #[cfg(not(any(windows, target_os = "macos")))]
         {
             Self::start_with(
                 crate::platform::capture_source()?,
@@ -162,8 +180,26 @@ fn encoder_for(region: Region, client_max: (u32, u32)) -> anyhow::Result<OpenH26
     Ok(OpenH264Encoder::new(config)?)
 }
 
-/// Builds an encoder for `frame`: hardware (Media Foundation) for GPU
-/// frames, software (openh264) for CPU frames.
+/// Picture size and bitrate for a hardware encoder: the tablet's full
+/// resolution and a generous bitrate for sharp text (≈10 bits/pixel/s,
+/// capped for Wi-Fi).
+#[cfg(any(windows, target_os = "macos"))]
+fn hardware_config(region: Region, client_max: (u32, u32)) -> EncoderConfig {
+    let client_max = oriented_max(region, client_max);
+    let (width, height) = fit_within(region.width, region.height, client_max.0, client_max.1);
+    let bitrate_kbps =
+        ((u64::from(width) * u64::from(height) * 10 / 1000) as u32).min(HARDWARE_MAX_KBPS);
+    EncoderConfig {
+        codec: VideoCodec::H264,
+        width,
+        height,
+        fps: FPS,
+        bitrate_kbps,
+    }
+}
+
+/// Builds an encoder for `frame`: hardware (Media Foundation, VideoToolbox)
+/// for GPU frames, software (openh264) for CPU frames.
 fn make_encoder(
     frame: &Frame,
     region: Region,
@@ -172,20 +208,8 @@ fn make_encoder(
     match &frame.data {
         #[cfg(windows)]
         FrameData::Gpu(gpu) => {
-            // Hardware: the tablet's full resolution, generous bitrate for sharp
-            // text (≈10 bits/pixel/s, capped for Wi-Fi).
-            let client_max = oriented_max(region, client_max);
-            let (width, height) =
-                fit_within(region.width, region.height, client_max.0, client_max.1);
-            let bitrate_kbps =
-                ((u64::from(width) * u64::from(height) * 10 / 1000) as u32).min(HARDWARE_MAX_KBPS);
-            let config = EncoderConfig {
-                codec: VideoCodec::H264,
-                width,
-                height,
-                fps: FPS,
-                bitrate_kbps,
-            };
+            let config = hardware_config(region, client_max);
+            let (width, height, bitrate_kbps) = (config.width, config.height, config.bitrate_kbps);
             let enc = ib_encode::MfEncoder::new(&gpu.device, (frame.width, frame.height), config)?;
             tracing::info!(
                 encoder = enc.encoder_name(),
@@ -197,7 +221,20 @@ fn make_encoder(
             );
             Ok(Box::new(enc))
         }
-        #[cfg(not(windows))]
+        #[cfg(target_os = "macos")]
+        FrameData::Gpu(_) => {
+            let config = hardware_config(region, client_max);
+            let enc = ib_encode::VtEncoder::new(config)?;
+            tracing::info!(
+                ?region,
+                width = config.width,
+                height = config.height,
+                bitrate_kbps = config.bitrate_kbps,
+                "hardware video encoder (VideoToolbox)"
+            );
+            Ok(Box::new(enc))
+        }
+        #[cfg(not(any(windows, target_os = "macos")))]
         FrameData::Gpu(_) => anyhow::bail!("no hardware encoder on this platform"),
         FrameData::Cpu(_) => {
             #[cfg(all(target_os = "linux", feature = "vaapi"))]
@@ -297,7 +334,11 @@ impl Rate {
 /// Consecutive hardware failures before falling back to software for good.
 const HARDWARE_RETRIES: u32 = 3;
 /// Bitrate ceiling for the hardware path (kbit/s).
-#[cfg(any(windows, all(target_os = "linux", feature = "vaapi")))]
+#[cfg(any(
+    windows,
+    target_os = "macos",
+    all(target_os = "linux", feature = "vaapi")
+))]
 const HARDWARE_MAX_KBPS: u32 = 25_000;
 
 fn run(
@@ -355,7 +396,7 @@ impl Pipeline {
         region: Region,
         client_max: (u32, u32),
     ) -> anyhow::Result<Self> {
-        source.start(region)?;
+        start_capture(source.as_mut(), region, client_max)?;
         Ok(Self {
             source,
             fallback,
@@ -376,7 +417,7 @@ impl Pipeline {
             match commands.try_recv() {
                 Ok(VideoCommand::SetRegion(r)) if r != self.region => {
                     self.region = r;
-                    self.source.start(r)?;
+                    start_capture(self.source.as_mut(), r, self.client_max)?;
                     self.encoder = None; // rebuilt for the new size on the next frame
                     self.force_key = true;
                     self.last = None;
@@ -429,7 +470,7 @@ impl Pipeline {
             .ok_or_else(|| anyhow::anyhow!("video encoding failed: {why:#}"))?;
         tracing::warn!("hardware video path unavailable ({why:#}); using the software encoder");
         self.source = make();
-        self.source.start(self.region)?;
+        start_capture(self.source.as_mut(), self.region, self.client_max)?;
         self.encoder = None;
         self.last = None;
         Ok(())
@@ -487,6 +528,12 @@ impl Pipeline {
             encode_done_t_us: ib_clock::now_us(),
             payload: encoded.data,
         };
+        tracing::trace!(
+            frame_no = chunk.frame_no,
+            kind = ?chunk.kind,
+            bytes = chunk.payload.len(),
+            "video chunk"
+        );
         match out.try_send(chunk) {
             Ok(()) => self.force_key = false,
             // Network behind: skip, lower the bitrate, and resync with a
@@ -500,6 +547,22 @@ impl Pipeline {
         self.last = Some(frame);
         Ok(Flow::Continue)
     }
+}
+
+/// Starts capturing `region`. On macOS the system scales the frames to the
+/// hardware encoder's size, which is faster than scaling them afterwards.
+#[cfg_attr(not(target_os = "macos"), allow(unused_variables))]
+fn start_capture(
+    source: &mut dyn ScreenSource,
+    region: Region,
+    client_max: (u32, u32),
+) -> Result<(), ib_capture::CaptureError> {
+    #[cfg(target_os = "macos")]
+    {
+        let config = hardware_config(region, client_max);
+        source.set_output_size(Some((config.width, config.height)));
+    }
+    source.start(region)
 }
 
 fn scale_to(frame: &Frame, width: u32, height: u32) -> Frame {

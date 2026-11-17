@@ -27,6 +27,12 @@ pkg-config = { workspace = true, optional = true }
 [target.'cfg(target_os = "linux")'.dependencies]
 tracing = { workspace = true, optional = true }
 
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-core-foundation.workspace = true
+objc2-core-media.workspace = true
+objc2-core-video.workspace = true
+objc2-video-toolbox.workspace = true
+
 [target.'cfg(windows)'.dependencies]
 windows = { workspace = true, features = [
     "Win32_Foundation",

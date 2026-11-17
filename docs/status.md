@@ -27,23 +27,44 @@ Implemented and unit-tested (see `docs/linux.md`):
 GitHub); resume by booting the
 live-USB kit (Ubuntu 26.04.1; Intel iGPU encodes via iHD, the RTX runs nouveau there).
 
-## Next — M4 macOS host
-Plan (`docs/plan.md` M4): ScreenCaptureKit capture (macOS 12.3+), VideoToolbox H.264 (real-time,
-no frame reordering), pen via CGEvent tablet pointer + proximity events (needs the Accessibility
-permission), permission onboarding (Screen Recording, Accessibility). Avoid virtual HID (CoreHID
-pressure bug FB24785043 on macOS 26). Test pressure in Krita, Photoshop, Affinity, Preview/Notes, OneNote.
+## In progress — M4 macOS host
+Implemented on the MacBook (Apple silicon, macOS 27), tested with the TB331FC over Wi-Fi:
+- **Pen:** CGEvent tablet-point events with proximity (`ib-inject/src/macos.rs`). Works with the real
+  pen. The app matrix (Krita, Preview/Notes, others) and which apps honour pressure are still to record.
+- **Capture:** ScreenCaptureKit (`ib-capture/src/macos.rs`), main display only. CPU frames (BGRA) for
+  the software encoder, GPU pixel buffers (NV12) for VideoToolbox. The system scales frames to the
+  encoder's size.
+- **Encoder:** VideoToolbox H.264 (`ib-encode/src/videotoolbox.rs`): low-latency rate control, one
+  reference frame, Main profile, AVCC converted to Annex B with SPS/PPS on every keyframe. Falls back
+  to CPU capture + openh264 when no hardware encoder is available.
+  Encode time for the full 3420x2214 screen at 1680x1088: about 6 ms (median) against 55 ms with
+  openh264. Output verified with an independent decoder (`mac_pipeline_probe`).
+  **Not yet seen on the tablet**: check the picture and the latency overlay there.
+- **Permissions:** asked when needed, with an explanation: Screen Recording when a tablet first
+  connects, Accessibility at the first pen touch.
+- **Bindings:** the `objc2` crate family (generated from Apple's headers) for all three backends.
+- **Decoder limit:** the tablet reports what its hardware decoder can take (TB331FC: 1920x1088, either
+  orientation) and the host keeps the picture within it.
+- **App:** keeps a list of paired computers (dropped after 90 days without use). Debug builds share one
+  signing key (`apps/android/app/debug.keystore`) so every machine can update the installed app.
 
-Things to settle early:
-- **USB on macOS:** Android USB tethering defaults to RNDIS, which macOS doesn't support. Check whether
-  the tablet can tether over CDC-NCM (macOS supports it natively); otherwise Wi-Fi only, or
-  `adb reverse` as an Advanced option.
-- New backends go behind the existing traits: `ScreenSource` (ib-capture), `VideoEncoder` (ib-encode),
-  `PenSink` (ib-inject), wired in `crates/ib-host/src/platform.rs` and `video.rs` like Windows/Linux.
-- macOS frames can stay on the GPU (IOSurface → VideoToolbox), like the Windows zero-copy path.
+Building the Android app on the Mac: JDK 17, Android command-line tools, NDK and `cargo-ndk`, then
+`./gradlew assembleDebug` in `apps/android` with `JAVA_HOME`, `ANDROID_HOME` and `ANDROID_NDK_HOME` set.
+
+Still to do for M4:
+- `docs/latency.md` rows for macOS (software and VideoToolbox, Wi-Fi).
+- **USB on macOS:** the TB331FC tethers RNDIS-only, which macOS doesn't support, and adb can't carry
+  QUIC. Needs the TCP fallback first, then an opt-in adb mode. Wi-Fi only until then.
+- Several displays, permission onboarding UI, notarised bundle (M6), iPad client.
 
 ## Open issues
 - Windows: root cause of occasional rejected pen events (a resync workaround exists, commit 945d526).
 - Possible brief flicker on the tablet after switching the View (zoom) mode.
+- The host never forgets a paired tablet (`paired-devices.txt` has no expiry). The tablet side expires
+  its list; the host side matters more, because a paired tablet can inject input.
+- The app doesn't reconnect by itself when the host restarts; the user has to tap Connect again.
+- `cargo deny check` hasn't been run on the Mac (not installed there), so the licences of the `objc2`
+  crates are unchecked.
 - `docs/latency.md` with measured end-to-end numbers (Wi-Fi vs USB, RTX vs iGPU) is still to write.
 - Linux NVIDIA: VA-API can't use NVENC; NVIDIA GPUs fall back to openh264. A direct NVENC backend is a
   follow-up (load `libnvidia-encode.so` at runtime; MIT-licensed headers).

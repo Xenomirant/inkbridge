@@ -16,12 +16,16 @@ mod openh264;
 mod scale;
 #[cfg(all(target_os = "linux", feature = "vaapi"))]
 mod vaapi;
+#[cfg(target_os = "macos")]
+mod videotoolbox;
 
 #[cfg(windows)]
 pub use crate::mf::MfEncoder;
 pub use crate::openh264::OpenH264Encoder;
 #[cfg(all(target_os = "linux", feature = "vaapi"))]
 pub use crate::vaapi::VaapiEncoder;
+#[cfg(target_os = "macos")]
+pub use crate::videotoolbox::VtEncoder;
 pub use scale::{fit_within, scale_bgra};
 
 use ib_capture::Frame;
