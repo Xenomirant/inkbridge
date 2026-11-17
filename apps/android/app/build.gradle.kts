@@ -76,6 +76,17 @@ android {
         ndk { abiFilters += shippedAbis }
     }
 
+    // Debug builds from every development machine share one key (checked in,
+    // not a secret), so a build from one machine can update another's install.
+    signingConfigs {
+        getByName("debug") {
+            storeFile = file("debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = true
