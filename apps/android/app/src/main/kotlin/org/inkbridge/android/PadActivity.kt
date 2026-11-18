@@ -8,7 +8,6 @@ import android.view.Gravity
 import android.view.SurfaceHolder
 import android.view.SurfaceView
 import android.view.WindowManager
-import android.widget.Button
 import android.widget.FrameLayout
 import android.widget.TextView
 import androidx.activity.ComponentActivity
@@ -42,35 +41,63 @@ class PadActivity : ComponentActivity() {
             .apply { setReferenceCounted(false) }
     }
     /** Opens the display menu; shown only when the computer has several. */
-    private var screens: Button? = null
+    private var screens: TextView? = null
+
+    /** The bars over the picture; they fade while the pen is drawing. */
+    private var controls: List<android.view.View> = emptyList()
+    private val showControls = Runnable { controls.forEach { it.animate().alpha(1f).setDuration(200).start() } }
+
+    /** Gets the bars out of the way of the pen, and back when it rests. */
+    private fun dimControls() {
+        controls.forEach { it.animate().cancel(); it.alpha = DIMMED }
+        info.removeCallbacks(showControls)
+        info.postDelayed(showControls, RESTORE_MS)
+    }
+
+    private fun dp(value: Float): Int = (value * resources.displayMetrics.density).toInt()
+
+    /** Status text in the normal colour, or as a warning. */
+    private fun status(text: String, warning: Boolean = false) {
+        info.text = text
+        info.setTextColor(if (warning) Ui.WARNING else Ui.TEXT)
+        if (warning) { info.removeCallbacks(showControls); showControls.run() }
+    }
     private var ticks = 0
+
+    /** Whether the status shows every latency figure or only the total. */
+    private var detailed = false
+    private var lastFigures = ""
     private val ticker = object : Runnable {
         override fun run() {
             val s = SessionHolder.session
             if (s == null) {
-                info.text = "Disconnected"
-                info.setTextColor(Color.RED)
+                status("Disconnected", warning = true)
                 return
             }
             if (!s.isConnected()) {
-                info.text = "Connection lost, reconnecting…"
-                info.setTextColor(Color.RED)
+                status("Connection lost, reconnecting…", warning = true)
                 reconnect()
                 return
             }
             val host = s.host()
             screens?.visibility = if (s.displays().size > 1) android.view.View.VISIBLE else android.view.View.GONE
             pad.onHostRegion(host.regionX, host.regionY, host.regionWidth, host.regionHeight)
-            info.text = if (s.hasVideo()) {
+            val link = if (host.usb) "USB" else "Wi-Fi"
+            val full = if (s.hasVideo()) {
                 val l = s.latency()
                 "%s · %s · screen %.0f ms (p95 %.0f) · encode %.0f · net %.0f · %.0f fps · %.1f Mbit/s".format(
-                    host.name, if (host.usb) "USB" else "Wi-Fi",
-                    l.totalMs, l.totalP95Ms, l.encodeMs, l.networkMs, l.fps, l.bitrateMbps,
+                    host.name, link, l.totalMs, l.totalP95Ms, l.encodeMs, l.networkMs, l.fps, l.bitrateMbps,
                 )
             } else {
                 "${host.name} · ${"%.1f".format(s.rttUs().toDouble() / 1000.0)} ms"
             }
-            if (++ticks % 8 == 0) android.util.Log.d("Inkbridge", info.text.toString().substringAfter(" · "))
+            // On screen: the short form; tap it for every figure.
+            status(
+                if (detailed || !s.hasVideo()) full
+                else "%s · %s · %.0f ms".format(host.name, link, s.latency().totalMs),
+            )
+            lastFigures = full
+            if (++ticks % 8 == 0) android.util.Log.d("Inkbridge", lastFigures.substringAfter(" · "))
             // Fast enough that the area follows a rotation almost at once.
             info.postDelayed(this, 250)
         }
@@ -89,41 +116,26 @@ class PadActivity : ComponentActivity() {
         val screen = if (session.hasVideo()) SurfaceView(this) else null
         val ink = if (screen != null) InkLayer(this) else null
         pad.inkLayer = ink
-        info = TextView(this).apply {
-            textSize = 13f; alpha = 0.7f; setPadding(24, 12, 24, 12); setTextColor(Color.DKGRAY)
-        }
-        val clear = Button(this).apply {
-            text = "Clear"
-            alpha = 0.85f
-            setOnClickListener { pad.clearInk() }
-        }
+        info = Ui.label(this, "", 12f, Ui.TEXT).apply { setPadding(dp(10f), dp(5f), dp(10f), dp(5f)) }
+        val clear = Ui.chip(this, "Clear") { pad.clearInk() }
         // Zoomable view: "View" switches two-finger gestures to moving and
         // zooming the tablet's view of the desktop; "Fit" shows it all.
-        val view = Button(this).apply {
-            text = "View"
-            alpha = 0.85f
-            setOnClickListener {
-                pad.viewMode = !pad.viewMode
-                text = if (pad.viewMode) "View ✓" else "View"
-            }
+        val view = Ui.chip(this, "View") { chip ->
+            pad.viewMode = !pad.viewMode
+            Ui.setChecked(chip, pad.viewMode)
         }
-        val fit = Button(this).apply {
-            text = "Fit"
-            alpha = 0.85f
-            setOnClickListener { pad.fitWholeDisplay() }
-        }
+        val fit = Ui.chip(this, "Fit") { pad.fitWholeDisplay() }
         // Which of the computer's displays to show and draw on.
-        val choose = Button(this).apply {
-            text = "Screen"
-            alpha = 0.85f
+        val choose = Ui.chip(this, "Screen") { chooseDisplay(session) }.apply {
             visibility = android.view.View.GONE
-            setOnClickListener { chooseDisplay(session) }
         }
         screens = choose
-        val tools = android.widget.LinearLayout(this).apply {
-            orientation = android.widget.LinearLayout.HORIZONTAL
-            addView(clear); if (screen != null) { addView(view); addView(fit); addView(choose) }
-        }
+        val tools = if (screen != null) Ui.glassBar(this, clear, view, fit, choose) else Ui.glassBar(this, clear)
+        val status = Ui.glassBar(this, info)
+        controls = listOf(tools, status)
+        status.setOnClickListener { detailed = !detailed }
+        pad.onPenDown = ::dimControls
+        val margin = dp(8f)
         setContentView(FrameLayout(this).apply {
             setBackgroundColor(Color.BLACK)
             screen?.let { addView(it, FrameLayout.LayoutParams(0, 0)) }
@@ -131,10 +143,10 @@ class PadActivity : ComponentActivity() {
             addView(pad)
             addView(tools, FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.START,
-            ))
-            addView(info, FrameLayout.LayoutParams(
+            ).apply { setMargins(margin, margin, margin, margin) })
+            addView(status, FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.END,
-            ))
+            ).apply { setMargins(margin, margin, margin, margin) })
         })
         hideSystemBars()
         screen?.let { attachVideo(session, it) }
@@ -275,6 +287,10 @@ class PadActivity : ComponentActivity() {
 
     private companion object {
         const val RETRY_MS = 1000L
+
+        /** How see-through the bars are while the pen draws, and for how long after. */
+        const val DIMMED = 0.15f
+        const val RESTORE_MS = 1500L
 
         /** How long one round waits for the computer to dial over USB. */
         const val USB_WAIT_MS = 2000u

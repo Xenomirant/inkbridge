@@ -1,11 +1,9 @@
 package org.inkbridge.android
 
 import android.content.Intent
-import android.graphics.Typeface
 import android.os.Build
 import android.os.Bundle
 import android.view.Gravity
-import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.TextView
 import android.app.AlertDialog
@@ -102,28 +100,46 @@ class MainActivity : ComponentActivity() {
         if (code.startsWith("inkbridge:")) pair(code)
     }
 
-    private fun buildUi(): LinearLayout {
-        val pad = (24 * resources.displayMetrics.density).toInt()
-        return LinearLayout(this).apply {
+    private fun buildUi(): android.view.View {
+        val pad = with(Ui) { dp(24f) }
+        val column = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            gravity = Gravity.CENTER_HORIZONTAL
             setPadding(pad, pad * 2, pad, pad)
-            addView(TextView(context).apply {
-                text = "Inkbridge"; textSize = 32f; typeface = Typeface.DEFAULT_BOLD
+            addView(Ui.label(context, "Inkbridge", 34f, bold = true))
+            addView(Ui.label(context, "Draw on your computer with this tablet's pen.", 16f, Ui.MUTED).apply {
+                setPadding(0, pad / 4, 0, pad)
             })
-            addView(TextView(context).apply {
-                text = "Use this tablet as a pen for your computer."; textSize = 16f; setPadding(0, pad / 3, 0, pad)
-            })
-            status = TextView(context).apply { textSize = 15f; setPadding(0, 0, 0, pad) }
+            status = Ui.label(context, "", 15f, Ui.ACCENT).apply { setPadding(0, 0, 0, pad / 2) }
             addView(status)
             hostList = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
             addView(hostList)
-            addView(Button(context).apply {
-                text = "Pair with a computer (scan QR code)"
-                setOnClickListener { scan.launch(Intent(this@MainActivity, ScanActivity::class.java)) }
+            addView(
+                Ui.primaryButton(context, "Pair with a computer") {
+                    scan.launch(Intent(this@MainActivity, ScanActivity::class.java))
+                },
+                LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT,
+                ).apply { topMargin = pad / 2 },
+            )
+            addView(Ui.label(context, "Scan the QR code that Inkbridge shows on the computer.", 13f, Ui.MUTED).apply {
+                gravity = Gravity.CENTER
+                setPadding(0, pad / 2, 0, 0)
             })
-            addView(TextView(context).apply {
-                text = "Core ${coreVersion()}"; textSize = 12f; alpha = 0.6f; setPadding(0, pad, 0, 0)
+            addView(Ui.label(context, "Core ${coreVersion()}", 12f, Ui.OUTLINE).apply {
+                gravity = Gravity.CENTER
+                setPadding(0, pad, 0, 0)
+            })
+        }
+        // A readable column in the middle of a wide tablet.
+        return android.widget.ScrollView(this).apply {
+            setBackgroundColor(Ui.BACKGROUND)
+            isFillViewport = true
+            addView(android.widget.FrameLayout(context).apply {
+                addView(column, android.widget.FrameLayout.LayoutParams(
+                    minOf(resources.displayMetrics.widthPixels, with(Ui) { dp(560f) }),
+                    android.widget.FrameLayout.LayoutParams.WRAP_CONTENT,
+                    Gravity.CENTER_HORIZONTAL,
+                ))
             })
         }
     }
@@ -131,15 +147,19 @@ class MainActivity : ComponentActivity() {
     private fun refresh() {
         val hosts = storage.hosts()
         hostList.removeAllViews()
+        val gap = with(Ui) { dp(10f) }
         for (host in hosts) {
-            hostList.addView(Button(this).apply {
-                text = "Connect to ${host.name}"
-                isEnabled = !busy
-                setOnClickListener { connect(host.code, pair = false, label = host.name) }
+            val card = Ui.card(this, host.name, HostCards.detail(host.lastUsedMs, System.currentTimeMillis())) {
+                if (!busy) connect(host.code, pair = false, label = host.name)
+            }.apply {
+                alpha = if (busy) 0.5f else 1f
                 setOnLongClickListener { confirmForget(host); true }
-            })
+            }
+            hostList.addView(card, LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT,
+            ).apply { bottomMargin = gap })
         }
-        if (!busy) status.text = if (hosts.isEmpty()) "Run Inkbridge on your computer and scan its QR code." else ""
+        if (!busy) status.text = if (hosts.isEmpty()) "Start Inkbridge on your computer to get its QR code." else ""
     }
 
     /** Long-press on a computer: remove its pairing from this tablet. */

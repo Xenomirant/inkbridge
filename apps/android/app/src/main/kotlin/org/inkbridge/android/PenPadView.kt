@@ -232,10 +232,14 @@ class PenPadView(context: Context, private val session: Session) : View(context)
         ink?.let { canvas.drawBitmap(it, 0f, 0f, null) }
     }
 
+    /** The pen touched the pad (to get the controls out of the way). */
+    var onPenDown: (() -> Unit)? = null
+
     override fun onTouchEvent(ev: MotionEvent): Boolean {
         val i = StylusMapper.stylusIndex(ev)
         if (i < 0) return onFingers(ev)
         if (ev.actionMasked == MotionEvent.ACTION_DOWN) {
+            onPenDown?.invoke()
             removeCallbacks(fadeInk)
             cancelGesture() // the pen wins over resting fingers
             removeCallbacks(outOfRange)

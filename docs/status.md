@@ -74,6 +74,10 @@ Implemented on the MacBook (Apple silicon, macOS 27), tested with the TB331FC ov
 - **Full screen:** the pad draws under the system bars and under Lenovo's three-dots window bar
   (drawing area 1920x1200 instead of 1920x1141). The bar itself is the tablet's own (system setting
   `enable_temp_zuifreeformbar`); an app can't remove it.
+- **App look:** one dark palette (`Ui.kt`). Home: paired computers as cards with when they were
+  last used. Pad: two small glass bars (tools left, status right) that fade while the pen draws;
+  the status shows computer, link and latency, and every figure after a tap. With the sharp extra
+  screen the bars sit in the black strip above the picture.
 - **Permissions:** asked when needed, with an explanation: Screen Recording when a tablet first
   connects, Accessibility at the first pen touch.
 - **Bindings:** the `objc2` crate family (generated from Apple's headers) for all three backends.
