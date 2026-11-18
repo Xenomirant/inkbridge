@@ -8,8 +8,8 @@ Showing a copy of a display is one use; the other is the tablet as a **second sc
 
 ## Decision
 - `ib-capture::MacVirtualDisplay` creates the display with `CGVirtualDisplay`. Every class and selector is looked up at run time; a missing one is an error with a clear message, never a crash.
-- The display takes the shape of the tablet's drawing area. Default mode: two thirds of the tablet's pixels in points, drawn at 2x (1280x760 points, 2560x1520 pixels for the TB331FC), so text is readable and the picture is sharp. Half size at 2x and full size at 1x are offered too.
-- The tablet chooses it in its Screen menu ("Use this tablet as an extra screen"); `--extend` starts that way. The display stays 15 s after a session ends, so a reconnecting tablet finds its windows in place.
+- Two kinds, chosen on the tablet. "Fill": the display has the shape of the tablet's drawing area; default mode two thirds of its pixels in points, drawn at 2x (1280x800 points, 2560x1600 pixels for the TB331FC), which leaves room for windows but is scaled twice on the way to the tablet. "Sharp": the display is exactly the picture the tablet's decoder takes (1920x1088), half of it in points at 2x, shown pixel for pixel with bars. A tablet whose decoder takes its whole screen gets one kind.
+- The tablet chooses it in its Screen menu; `--extend` (with `--sharp`) starts that way. The display stays 15 s after a session ends, so a reconnecting tablet finds its windows in place.
 - Capture, the pen and regions use the existing display selection (protocol 0.2); nothing in the protocol is new.
 
 ## Consequences

@@ -81,6 +81,9 @@ class PadActivity : ComponentActivity() {
         val session = SessionHolder.session ?: run { finish(); return }
         own = session
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        // The whole screen is the pad: don't leave room for system bars or
+        // a vendor's window caption (they are hidden, or drawn over it).
+        WindowCompat.setDecorFitsSystemWindows(window, false)
 
         pad = PenPadView(this, session)
         val screen = if (session.hasVideo()) SurfaceView(this) else null

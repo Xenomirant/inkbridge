@@ -269,9 +269,12 @@ const EXTRA_GRACE: std::time::Duration = std::time::Duration::from_secs(15);
 
 /// The extra display the tablet is, while it is one (macOS).
 #[cfg(target_os = "macos")]
-static EXTRA: std::sync::Mutex<Option<ib_capture::MacVirtualDisplay>> = std::sync::Mutex::new(None);
+static EXTRA: std::sync::Mutex<Option<(ib_capture::MacVirtualDisplay, ExtraScreen)>> =
+    std::sync::Mutex::new(None);
 /// Whether new sessions should make the tablet an extra display.
 static EXTEND_WANTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// Whether that display should be the pixel-for-pixel kind.
+static SHARP_WANTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 /// Counts sessions, so an old session's clean-up can't undo a newer one.
 static SESSIONS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
@@ -282,12 +285,27 @@ fn extra_display_id() -> Option<u64> {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .as_ref()
-            .map(|d| u64::from(d.id()))
+            .map(|(d, _)| u64::from(d.id()))
     }
     #[cfg(not(target_os = "macos"))]
     {
         None
     }
+}
+
+/// What the extra display is made for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ExtraScreen {
+    /// The tablet's drawing area in its pixels.
+    pub viewport: (u32, u32),
+    /// The part of it the display covers: all of it, or (`sharp`) as much
+    /// as the tablet can show pixel for pixel.
+    pub area: (u32, u32),
+    /// The size of the picture the tablet is sent.
+    pub picture: (u32, u32),
+    /// Pixel for pixel on the tablet, with bars where the area is smaller
+    /// than the drawing area; otherwise the picture is stretched to fill.
+    pub sharp: bool,
 }
 
 /// Whether this computer can make the tablet an extra display.
@@ -317,16 +335,25 @@ pub fn set_extend_wanted(wanted: bool) {
     EXTEND_WANTED.store(wanted, std::sync::atomic::Ordering::Relaxed);
 }
 
-/// The tablet drawing area the extra display is shaped for, while there
-/// is one.
-pub fn extra_display_size() -> Option<(u32, u32)> {
+/// Whether the extra display for new sessions is the pixel-for-pixel kind.
+pub fn sharp_wanted() -> bool {
+    SHARP_WANTED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// `--extend sharp`, or the tablet's choice in its display menu.
+pub fn set_sharp_wanted(wanted: bool) {
+    SHARP_WANTED.store(wanted, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// What the extra display was made for, while there is one.
+pub fn extra_screen() -> Option<ExtraScreen> {
     #[cfg(target_os = "macos")]
     {
         EXTRA
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .as_ref()
-            .map(ib_capture::MacVirtualDisplay::size)
+            .map(|(_, made_for)| *made_for)
     }
     #[cfg(not(target_os = "macos"))]
     {
@@ -334,29 +361,37 @@ pub fn extra_display_size() -> Option<(u32, u32)> {
     }
 }
 
-/// Makes the tablet an extra display shaped for its `width × height`
-/// drawing area, or gives the existing one that shape (the tablet was
-/// rotated). Returns its position in [`displays`]; the caller switches to
-/// it.
-pub fn extend(width: u32, height: u32) -> anyhow::Result<usize> {
+/// Makes the tablet an extra display as `wanted` describes, or changes
+/// the existing one to that (the tablet was rotated, or the other kind
+/// was chosen). Returns its position in [`displays`]; the caller switches
+/// to it.
+pub fn extend(wanted: ExtraScreen) -> anyhow::Result<usize> {
     #[cfg(target_os = "macos")]
     {
+        let (width, height) = wanted.area;
         anyhow::ensure!(width > 0 && height > 0, "the tablet's size isn't known yet");
+        // The two kinds are different displays to the system.
+        if extra_screen().is_some_and(|e| e.sharp != wanted.sharp) {
+            stop_extending();
+        }
         let id = {
             let mut extra = EXTRA
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            match extra.as_mut() {
-                Some(display) => display.resize(width, height)?,
-                None => {
-                    *extra = Some(ib_capture::MacVirtualDisplay::new(
-                        "Inkbridge tablet",
-                        width,
-                        height,
-                    )?);
-                }
+            if let Some((display, made_for)) = extra.as_mut() {
+                display.resize(width, height, wanted.picture)?;
+                *made_for = wanted;
+            } else {
+                let display = ib_capture::MacVirtualDisplay::new(
+                    "Inkbridge tablet",
+                    width,
+                    height,
+                    wanted.picture,
+                    wanted.sharp,
+                )?;
+                *extra = Some((display, wanted));
             }
-            extra.as_ref().map(|d| u64::from(d.id()))
+            extra.as_ref().map(|(d, _)| u64::from(d.id()))
         };
         // The system adds the display, and changes its shape, a moment later.
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
@@ -376,7 +411,7 @@ pub fn extend(width: u32, height: u32) -> anyhow::Result<usize> {
     }
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = (width, height);
+        let _ = wanted;
         anyhow::bail!("using the tablet as an extra screen works on macOS only so far")
     }
 }
@@ -389,7 +424,7 @@ pub fn stop_extending() {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .take();
-        if let Some(display) = gone {
+        if let Some((display, _)) = gone {
             let mut chosen = DISPLAY
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);

@@ -4,6 +4,7 @@
 //! - `--pair`: open pairing even if tablets are already paired;
 //! - `--display N`: show and draw on display N of `--list-displays`;
 //! - `--extend`: macOS: the tablet is an extra screen, not a copy of one;
+//!   with `--sharp` it is shaped so the tablet shows it pixel for pixel;
 //! - `--fake-sink`: log pen events instead of injecting them (testing).
 
 use std::net::{Ipv6Addr, SocketAddr};
@@ -57,6 +58,7 @@ fn parse_args() -> anyhow::Result<Args> {
                 );
                 platform::set_extend_wanted(true);
             }
+            "--sharp" => platform::set_sharp_wanted(true),
             "--list-displays" => {
                 println!("{}", platform::describe_displays());
                 std::process::exit(0);
@@ -80,7 +82,8 @@ fn parse_args() -> anyhow::Result<Args> {
             "-h" | "--help" => {
                 println!(
                     "inkbridge-host [--port N] [--pair] [--display N] [--extend] [--fake-sink]\n\
-                     inkbridge-host --extend             macOS: use the tablet as an extra screen (also in the tablet's Screen menu)\n\
+                     inkbridge-host --extend [--sharp]   macOS: use the tablet as an extra screen (also in the tablet's Screen menu);\n\
+                                                         --sharp: pixel for pixel on the tablet, with thin bars\n\
                      inkbridge-host --list-displays      number the connected displays for --display\n\
                      inkbridge-host --fix-usb-routing    keep internet traffic off USB-tethered tablets (asks for admin once)\n\
                      inkbridge-host --undo-usb-routing   restore Windows' automatic routing for them\n\

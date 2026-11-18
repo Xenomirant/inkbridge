@@ -181,13 +181,26 @@ fn encoder_for(region: Region, client_max: (u32, u32)) -> anyhow::Result<OpenH26
     Ok(OpenH264Encoder::new(config)?)
 }
 
+/// The size of the picture a tablet gets for a `width × height` area of
+/// the desktop, given the largest picture its decoder takes.
+#[cfg(any(windows, target_os = "macos"))]
+pub fn picture_size(width: u32, height: u32, client_max: (u32, u32)) -> (u32, u32) {
+    let region = Region {
+        x: 0,
+        y: 0,
+        width,
+        height,
+    };
+    let max = oriented_max(region, client_max);
+    fit_within(width, height, max.0, max.1)
+}
+
 /// Picture size and bitrate for a hardware encoder: the tablet's full
 /// resolution and a generous bitrate for sharp text (≈10 bits/pixel/s,
 /// capped for Wi-Fi).
 #[cfg(any(windows, target_os = "macos"))]
 fn hardware_config(region: Region, client_max: (u32, u32)) -> EncoderConfig {
-    let client_max = oriented_max(region, client_max);
-    let (width, height) = fit_within(region.width, region.height, client_max.0, client_max.1);
+    let (width, height) = picture_size(region.width, region.height, client_max);
     let bitrate_kbps =
         ((u64::from(width) * u64::from(height) * 10 / 1000) as u32).min(HARDWARE_MAX_KBPS);
     EncoderConfig {

@@ -29,8 +29,8 @@ Encoding: [postcard](https://postcard.jamesmunns.com/) (compact, varint-based). 
   shown) after the hello and after every change. The client may send `SelectDisplay` with an index
   into that list; the host answers with `Displays` and then `SetRegion`, and the video restarts with
   a keyframe. Hosts send `Displays` only to clients whose hello says 0.2 or newer. A host that
-  can make the tablet an extra screen ends the list with that offer; choosing it adds a display,
-  which then appears in the list as the current one.
+  can make the tablet an extra screen ends the list with its offers (entries without a size);
+  choosing one adds a display, which then appears in the list as the current one.
 - **End:** `Goodbye`, then close. Hosts release the pen (`PenSink::release`) on any disconnect.
 
 ## Versioning

@@ -56,14 +56,24 @@ Implemented on the MacBook (Apple silicon, macOS 27), tested with the TB331FC ov
   ones stop reading at an unknown message. Checked: the host against two real displays (ignored
   test `the_tablet_switches_displays`), and on the tablet `--display 2`, the "Screen" button
   (a switch takes 120-180 ms) and the pen on the second display.
-- **The tablet as an extra screen:** "Use this tablet as an extra screen" in the tablet's Screen
-  menu, or `--extend` on the host. The host adds a virtual display with the shape of the tablet's
-  drawing area (`CGVirtualDisplay`, a private API: ADR-0008), captures it and puts the pen on it. It
-  follows the tablet's rotation, and stays 15 s after a session ends so a reconnect keeps the
-  windows in place. On the TB331FC: a 2560x1520 display (1280x760 points at 2x), picture
-  1832x1088 with no black bars, about 40 ms capture-to-screen over Wi-Fi. Checked with the ignored
+- **The tablet as an extra screen:** in the tablet's Screen menu, or `--extend` on the host. The
+  host adds a virtual display (`CGVirtualDisplay`, a private API: ADR-0008), captures it and puts
+  the pen on it. It follows the tablet's rotation, and stays 15 s after a session ends so a
+  reconnect keeps the windows in place. Two kinds, because the TB331FC's decoders stop at 1920x1088
+  while its screen is 1920x1200:
+  - "fill the tablet": the display has the tablet's shape (2560x1600, 1280x800 points at 2x). The
+    picture is 1740x1088, stretched by 10 % on the tablet, so text is soft.
+  - "sharpest picture (thin bars)" (`--extend --sharp`): the display is exactly what the decoder
+    takes (1920x1088, 960x544 points at 2x). Nothing is scaled on either side.
+  Measured with a text pattern on the tablet: 9 pt text and one-pixel bars are clearly sharper
+  pixel for pixel. About 32-40 ms capture-to-screen over Wi-Fi in both. Checked with the ignored
   tests `an_extra_display_appears_and_goes_away` and `the_tablet_becomes_an_extra_screen`, and on
   the tablet. Not yet checked: a pen stroke on it.
+- **Still screen:** capture delivers nothing while the screen is still, so the pipeline encodes the
+  last frame four more times (50 ms apart) to let it get sharp.
+- **Full screen:** the pad draws under the system bars and under Lenovo's three-dots window bar
+  (drawing area 1920x1200 instead of 1920x1141). The bar itself is the tablet's own (system setting
+  `enable_temp_zuifreeformbar`); an app can't remove it.
 - **Permissions:** asked when needed, with an explanation: Screen Recording when a tablet first
   connects, Accessibility at the first pen touch.
 - **Bindings:** the `objc2` crate family (generated from Apple's headers) for all three backends.
