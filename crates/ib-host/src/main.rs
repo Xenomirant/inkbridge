@@ -1,8 +1,9 @@
 //! `inkbridge-host`: command-line host for M1 (pen input, no video yet).
 //!
-//! Usage: `inkbridge-host [--port N] [--pair] [--display N] [--fake-sink]`
+//! Usage: `inkbridge-host [--port N] [--pair] [--display N] [--extend] [--fake-sink]`
 //! - `--pair`: open pairing even if tablets are already paired;
 //! - `--display N`: show and draw on display N of `--list-displays`;
+//! - `--extend`: macOS: the tablet is an extra screen, not a copy of one;
 //! - `--fake-sink`: log pen events instead of injecting them (testing).
 
 use std::net::{Ipv6Addr, SocketAddr};
@@ -49,6 +50,13 @@ fn parse_args() -> anyhow::Result<Args> {
                         .parse()?,
                 );
             }
+            "--extend" => {
+                anyhow::ensure!(
+                    platform::extend_supported(),
+                    "using the tablet as an extra screen works on macOS only so far"
+                );
+                platform::set_extend_wanted(true);
+            }
             "--list-displays" => {
                 println!("{}", platform::describe_displays());
                 std::process::exit(0);
@@ -71,7 +79,8 @@ fn parse_args() -> anyhow::Result<Args> {
             "--remove-uinput-setup" => std::process::exit(run_uinput(false)),
             "-h" | "--help" => {
                 println!(
-                    "inkbridge-host [--port N] [--pair] [--display N] [--fake-sink]\n\
+                    "inkbridge-host [--port N] [--pair] [--display N] [--extend] [--fake-sink]\n\
+                     inkbridge-host --extend             macOS: use the tablet as an extra screen (also in the tablet's Screen menu)\n\
                      inkbridge-host --list-displays      number the connected displays for --display\n\
                      inkbridge-host --fix-usb-routing    keep internet traffic off USB-tethered tablets (asks for admin once)\n\
                      inkbridge-host --undo-usb-routing   restore Windows' automatic routing for them\n\

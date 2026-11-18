@@ -31,6 +31,8 @@ struct SessionState {
     aspect: f64,
     /// The tablet's drawing area in its pixels.
     viewport: (u32, u32),
+    /// Whether the tablet's app understands the display list (protocol 0.2).
+    display_choice: bool,
 }
 
 /// Logs what the network did to the video every couple of seconds (debug
@@ -282,6 +284,7 @@ impl Host {
             Err(e) => tracing::warn!("session ended: {e}"),
         }
         let _ = self.pen.send(PenInput::Disconnected);
+        crate::platform::session_ended();
         conn.close("session over");
         tracing::info!("tablet disconnected");
     }
@@ -294,6 +297,10 @@ impl Host {
     ) -> anyhow::Result<Option<String>> {
         let mut ctl = conn.accept_control().await?;
         let peer = conn.peer_fingerprint();
+        if let Some(main) = crate::platform::session_started() {
+            tracing::info!("the display shown last is gone, showing the main one");
+            self.show(&main);
+        }
         let settings = HostSettings {
             host_name: self.config.host_name.clone(),
             caps: Capabilities {
@@ -322,6 +329,7 @@ impl Host {
             *self.pairing.lock().await = None;
         }
         tracing::info!(device = %hello.device_name, "session started");
+        self.restore_extra_display(hello.screen_width, hello.screen_height);
         let region = self
             .apply_viewport(&mut ctl, hello.screen_width, hello.screen_height)
             .await?;
@@ -332,10 +340,10 @@ impl Host {
             video_out: None,
             aspect: f64::from(hello.screen_width.max(1)) / f64::from(hello.screen_height.max(1)),
             viewport: (hello.screen_width, hello.screen_height),
+            display_choice: false,
         };
-        if hello.version.minor >= ib_protocol::DISPLAY_CHOICE_MINOR {
-            self.send_displays(&mut ctl).await?;
-        }
+        session.display_choice = hello.version.minor >= ib_protocol::DISPLAY_CHOICE_MINOR;
+        self.send_displays(&mut ctl, &session).await?;
         let mut video_task = None;
         if settings.caps.negotiate_codec(&hello.caps).is_some() {
             let (tx, mut rx) = tokio::sync::mpsc::channel::<VideoChunk>(VIDEO_QUEUE);
@@ -397,47 +405,119 @@ impl Host {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    /// Tells the tablet which displays it can choose from, if there is a choice.
-    async fn send_displays(&self, ctl: &mut ib_transport::Control) -> anyhow::Result<()> {
-        let all = crate::platform::displays();
-        if all.len() < 2 {
-            return Ok(());
-        }
-        let current = u8::try_from(crate::platform::current_display()).unwrap_or(0);
-        let displays = all
+    /// The displays the tablet can choose from. When the computer can make
+    /// the tablet an extra screen and hasn't yet, that choice comes last.
+    fn display_choices(session: &SessionState) -> Vec<ib_protocol::DisplayInfo> {
+        let mut choices: Vec<ib_protocol::DisplayInfo> = crate::platform::displays()
             .into_iter()
             .map(|d| ib_protocol::DisplayInfo {
                 name: d.name,
                 bounds: d.bounds,
             })
             .collect();
+        if crate::platform::extend_supported() && !crate::platform::extending() {
+            let (width, height) = session.viewport;
+            choices.push(ib_protocol::DisplayInfo {
+                name: "Use this tablet as an extra screen".into(),
+                bounds: Region {
+                    x: 0,
+                    y: 0,
+                    width,
+                    height,
+                },
+            });
+        }
+        choices
+    }
+
+    /// Tells the tablet which displays it can choose from, if there is a
+    /// choice and its app understands the message (older ones stop reading
+    /// at an unknown message).
+    async fn send_displays(
+        &self,
+        ctl: &mut ib_transport::Control,
+        session: &SessionState,
+    ) -> anyhow::Result<()> {
+        let displays = Self::display_choices(session);
+        if !session.display_choice || displays.len() < 2 {
+            return Ok(());
+        }
+        let current = u8::try_from(crate::platform::current_display()).unwrap_or(0);
         ctl.send(&ControlMessage::Displays { displays, current })
             .await?;
         Ok(())
     }
 
-    /// The tablet chose another display: move the pen and the picture there.
+    /// A session starts while the tablet should be an extra display
+    /// (`--extend`, or it was one in its last session): make it one again.
+    fn restore_extra_display(&self, screen_width: u32, screen_height: u32) {
+        if !crate::platform::extend_wanted() {
+            return;
+        }
+        // One left from the last session keeps its shape: the drawing
+        // area (sent next) is smaller than the screen.
+        let (width, height) =
+            crate::platform::extra_display_size().unwrap_or((screen_width, screen_height));
+        match crate::platform::extend(width, height).and_then(crate::platform::switch_display) {
+            Ok(extra) => self.show(&extra),
+            Err(e) => tracing::warn!("the tablet is not an extra screen: {e:#}"),
+        }
+    }
+
+    /// Makes `display` the one this host maps the tablet to.
+    fn show(&self, display: &ib_capture::Display) {
+        *self
+            .display
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = display.bounds;
+        let _ = self
+            .pen
+            .send(PenInput::SetDisplay(display.id, display.bounds));
+    }
+
+    /// The tablet chose another display, or to be an extra one: move the
+    /// pen and the picture there.
     async fn select_display(
         &self,
         ctl: &mut ib_transport::Control,
         session: &mut SessionState,
         index: usize,
     ) -> anyhow::Result<()> {
-        let chosen = match crate::platform::switch_display(index) {
+        let extend = !crate::platform::extending() && index == crate::platform::displays().len();
+        let (width, height) = session.viewport;
+        let switched = if extend {
+            crate::platform::extend(width, height)
+        } else {
+            Ok(index)
+        }
+        .and_then(crate::platform::switch_display);
+        let chosen = match switched {
             Ok(display) => display,
             Err(e) => {
                 tracing::warn!("display not changed: {e:#}");
-                return self.send_displays(ctl).await;
+                return self.send_displays(ctl, session).await;
             }
         };
         tracing::info!(name = %chosen.name, bounds = ?chosen.bounds, "tablet chose a display");
-        *self
-            .display
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = chosen.bounds;
-        let _ = self.pen.send(PenInput::SetDisplay(chosen.id));
+        crate::platform::set_extend_wanted(chosen.name == crate::platform::EXTRA_NAME);
+        if !crate::platform::extend_wanted() {
+            // Capture stops first: it may be running on the extra display.
+            session.video = None;
+            crate::platform::stop_extending();
+        }
+        self.show(&chosen);
+        self.remap(ctl, session).await
+    }
+
+    /// The shown display changed (another one, or the extra display was
+    /// reshaped): tell the tablet and start capture again on it.
+    async fn remap(
+        &self,
+        ctl: &mut ib_transport::Control,
+        session: &mut SessionState,
+    ) -> anyhow::Result<()> {
         // The tablet learns the new bounds before the region inside them.
-        self.send_displays(ctl).await?;
+        self.send_displays(ctl, session).await?;
         // Capture is bound to a display: stop it before mapping the new
         // region, then start again there.
         session.video = None;
@@ -450,6 +530,32 @@ impl Host {
             }
         }
         Ok(())
+    }
+
+    /// The drawing area of a tablet that is an extra display changed (it
+    /// was rotated, or reported its real area after connecting): give the
+    /// display that shape. Returns whether it changed.
+    fn reshape_extra_display(&self, width: u32, height: u32) -> bool {
+        let shaped_for = crate::platform::extra_display_size();
+        if !crate::platform::extend_wanted()
+            || shaped_for.is_none()
+            || shaped_for == Some((width, height))
+            || width == 0
+            || height == 0
+        {
+            return false;
+        }
+        match crate::platform::extend(width, height).and_then(crate::platform::switch_display) {
+            Ok(extra) => {
+                tracing::info!(bounds = ?extra.bounds, "the extra display follows the tablet's shape");
+                self.show(&extra);
+                true
+            }
+            Err(e) => {
+                tracing::warn!("the extra display kept its shape: {e:#}");
+                false
+            }
+        }
     }
 
     /// Picks the desktop region for the tablet's current viewport and tells
@@ -523,9 +629,13 @@ impl Host {
                 ControlMessage::Viewport { width, height } => {
                     session.aspect = f64::from(width.max(1)) / f64::from(height.max(1));
                     session.viewport = (width, height);
-                    let region = self.apply_viewport(ctl, width, height).await?;
-                    if let Some(v) = &session.video {
-                        v.set_region(region);
+                    if self.reshape_extra_display(width, height) {
+                        self.remap(ctl, session).await?;
+                    } else {
+                        let region = self.apply_viewport(ctl, width, height).await?;
+                        if let Some(v) = &session.video {
+                            v.set_region(region);
+                        }
                     }
                 }
                 ControlMessage::RequestView(requested) => {
@@ -713,6 +823,123 @@ mod tests {
         .expect("the host did not answer")
     }
 
+    /// The tablet becomes an extra screen from its display menu: a new
+    /// display appears with the tablet's shape, the picture and the pen
+    /// move to it, it follows a rotation, and it goes away again when the
+    /// tablet chooses a real display.
+    ///
+    /// Adds a real extra display to this Mac for a few seconds (windows
+    /// may shift). Needs the Screen Recording permission. Run with:
+    /// `cargo test -p ib-host --lib the_tablet_becomes_an_extra_screen -- --ignored --nocapture`
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore = "creates a real virtual display; needs the Screen Recording permission"]
+    async fn the_tablet_becomes_an_extra_screen() {
+        assert!(crate::platform::extend_supported(), "macOS only");
+        let real = crate::platform::displays();
+        let identity = Identity::generate().unwrap();
+        let config = HostConfig {
+            host_name: "Host".into(),
+            bind: "127.0.0.1:0".parse().unwrap(),
+            region: real[0].bounds,
+            pen_features: PenFeatures::default(),
+            video: true,
+        };
+        let (pen, pen_rx) = std::sync::mpsc::channel();
+        let host = Host::new(identity.clone(), config, PairingStore::in_memory(), pen).unwrap();
+        let addr = host.local_addr().unwrap();
+        let offer = host.open_pairing().await.unwrap();
+        tokio::spawn(host.run(|_| {}));
+
+        let endpoint = ib_transport::ClientEndpoint::new(Identity::generate().unwrap()).unwrap();
+        let conn = endpoint
+            .connect(addr, identity.fingerprint())
+            .await
+            .unwrap();
+        let mut ctl = conn.open_control().await.unwrap();
+        let hello = ib_protocol::ClientHello {
+            version: ib_protocol::PROTOCOL_VERSION,
+            device_name: "Tablet".into(),
+            caps: Capabilities {
+                video_codecs: vec![VideoCodec::H264],
+                max_width: 1920,
+                max_height: 1088,
+                max_fps: 60,
+                pen: PenFeatures::default(),
+            },
+            screen_width: 1920,
+            screen_height: 1200,
+        };
+        ib_session::client_handshake(&mut ctl, hello, Some((offer.secret.0, "Tablet".into())))
+            .await
+            .unwrap();
+        let displays = |m| match m {
+            ControlMessage::Displays { displays, current } => Some((displays, current)),
+            _ => None,
+        };
+        let (listed, _) = wait_for(&mut ctl, displays).await;
+        assert_eq!(listed.len(), real.len() + 1, "the offer comes last");
+        let mut video = conn.accept_video().await.unwrap();
+        let main = video.recv().await.unwrap();
+
+        // Become an extra screen.
+        let offer_index = u8::try_from(real.len()).unwrap();
+        ctl.send(&ControlMessage::SelectDisplay { index: offer_index })
+            .await
+            .unwrap();
+        let (listed, current) = wait_for(&mut ctl, displays).await;
+        let extra = &listed[usize::from(current)];
+        println!("extra screen: {extra:?}");
+        assert_eq!(extra.name, crate::platform::EXTRA_NAME);
+        assert_eq!((extra.bounds.width, extra.bounds.height), (2560, 1600));
+        assert_eq!(
+            listed.len(),
+            real.len() + 1,
+            "no second offer while extending"
+        );
+        assert!(
+            pen_rx.try_iter().any(
+                |i| matches!(i, PenInput::SetDisplay(id, _) if !real.iter().any(|d| d.id == id))
+            )
+        );
+        let frame = loop {
+            let f = video.recv().await.unwrap();
+            // The extra screen has another shape than the main display.
+            if (f.width, f.height) != (main.width, main.height) {
+                break f;
+            }
+        };
+        println!("landscape picture {}x{}", frame.width, frame.height);
+        assert!(frame.width > frame.height);
+
+        // The tablet is rotated: the display takes its new shape.
+        ctl.send(&ControlMessage::Viewport {
+            width: 1200,
+            height: 1920,
+        })
+        .await
+        .unwrap();
+        let (listed, current) = wait_for(&mut ctl, displays).await;
+        let extra = &listed[usize::from(current)];
+        assert_eq!((extra.bounds.width, extra.bounds.height), (1600, 2560));
+        let frame = loop {
+            let f = video.recv().await.unwrap();
+            if f.height > f.width {
+                break f;
+            }
+        };
+        println!("portrait picture {}x{}", frame.width, frame.height);
+
+        // Back to a real display: the extra one goes away.
+        ctl.send(&ControlMessage::SelectDisplay { index: 0 })
+            .await
+            .unwrap();
+        let (listed, current) = wait_for(&mut ctl, displays).await;
+        assert_eq!(current, 0);
+        assert_eq!(listed.len(), real.len() + 1);
+        assert!(listed.iter().all(|d| d.name != crate::platform::EXTRA_NAME));
+        assert_eq!(crate::platform::displays().len(), real.len());
+    }
+
     /// The tablet's display menu, against the real screens: the picture and
     /// the mapped region move to the second display and back.
     ///
@@ -765,7 +992,9 @@ mod tests {
             _ => None,
         })
         .await;
-        assert_eq!((listed.0.len(), listed.1), (all.len(), 0));
+        // On macOS the list ends with the offer to be an extra screen.
+        let offers = all.len() + usize::from(crate::platform::extend_supported());
+        assert_eq!((listed.0.len(), listed.1), (offers, 0));
 
         let mut video = conn.accept_video().await.unwrap();
         let first = video.recv().await.unwrap();
@@ -795,7 +1024,7 @@ mod tests {
             assert!(
                 pen_rx
                     .try_iter()
-                    .any(|i| matches!(i, PenInput::SetDisplay(id) if id == display.id))
+                    .any(|i| matches!(i, PenInput::SetDisplay(id, _) if id == display.id))
             );
             let key = tokio::time::timeout(std::time::Duration::from_secs(10), async {
                 loop {

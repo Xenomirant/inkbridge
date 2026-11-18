@@ -163,6 +163,23 @@ fn display_info(id: u32) -> (Region, f64) {
         CGDisplayMode::pixel_width(mode),
         CGDisplayMode::pixel_height(mode),
     );
+    // Core Graphics reads display modes once per process: a display that
+    // appears later has no mode there, though its bounds in points are
+    // right. For our own virtual display the scale is known anyway. (A
+    // monitor plugged in while the host runs stays unlisted until restart.)
+    if w == 0
+        && points.width > 0.0
+        && let Some(scale) = crate::macos_virtual::scale_of(id, points.width)
+    {
+        // Rounded: the sizes are whole pixels.
+        let bounds = Region {
+            x: 0,
+            y: 0,
+            width: (points.width * scale).round() as u32,
+            height: (points.height * scale).round() as u32,
+        };
+        return (bounds, scale);
+    }
     let scale = if w > 0 && points.width > 0.0 {
         w as f64 / points.width
     } else {

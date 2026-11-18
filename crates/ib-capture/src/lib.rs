@@ -17,6 +17,10 @@ pub use pipewire::PipeWireScreenSource;
 mod macos;
 #[cfg(target_os = "macos")]
 pub use macos::{MacScreenSource, mac_displays, screen_access_granted};
+#[cfg(target_os = "macos")]
+mod macos_virtual;
+#[cfg(target_os = "macos")]
+pub use macos_virtual::{MacVirtualDisplay, virtual_modes};
 #[cfg(windows)]
 mod windows;
 #[cfg(target_os = "linux")]

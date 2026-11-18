@@ -321,9 +321,14 @@ impl PenSink for MacPenSink {
         "macos-cgevent"
     }
 
-    fn set_display(&mut self, id: u64) {
-        if let Ok(id) = u32::try_from(id) {
-            self.use_display(id);
+    fn set_display(&mut self, id: u64, bounds: Region) {
+        let Ok(id) = u32::try_from(id) else { return };
+        self.use_display(id);
+        // The caller's pixel size wins: Core Graphics has no mode (so no
+        // scale) for a display that appeared after the host started.
+        let points = CGDisplayBounds(id).size.width;
+        if bounds.width > 0 && points > 0.0 {
+            self.scale = f64::from(bounds.width) / points;
         }
     }
 

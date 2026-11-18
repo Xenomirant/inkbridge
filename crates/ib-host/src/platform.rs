@@ -240,7 +240,14 @@ pub fn switch_display(index: usize) -> anyhow::Result<ib_capture::Display> {
 pub fn displays() -> Vec<ib_capture::Display> {
     #[cfg(target_os = "macos")]
     {
-        ib_capture::mac_displays()
+        let extra = extra_display_id();
+        let mut all = ib_capture::mac_displays();
+        for d in &mut all {
+            if Some(d.id) == extra {
+                EXTRA_NAME.clone_into(&mut d.name);
+            }
+        }
+        all
     }
     #[cfg(not(target_os = "macos"))]
     {
@@ -250,6 +257,184 @@ pub fn displays() -> Vec<ib_capture::Display> {
             bounds: primary_display(),
             primary: true,
         }]
+    }
+}
+
+/// Name of the tablet's own display in the display list.
+pub const EXTRA_NAME: &str = "This tablet (extra screen)";
+
+/// How long the extra display outlives a session, so a tablet that
+/// reconnects finds its windows where they were.
+const EXTRA_GRACE: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// The extra display the tablet is, while it is one (macOS).
+#[cfg(target_os = "macos")]
+static EXTRA: std::sync::Mutex<Option<ib_capture::MacVirtualDisplay>> = std::sync::Mutex::new(None);
+/// Whether new sessions should make the tablet an extra display.
+static EXTEND_WANTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// Counts sessions, so an old session's clean-up can't undo a newer one.
+static SESSIONS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn extra_display_id() -> Option<u64> {
+    #[cfg(target_os = "macos")]
+    {
+        EXTRA
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .map(|d| u64::from(d.id()))
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        None
+    }
+}
+
+/// Whether this computer can make the tablet an extra display.
+pub fn extend_supported() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        ib_capture::MacVirtualDisplay::supported()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        false
+    }
+}
+
+/// Whether the tablet is an extra display right now.
+pub fn extending() -> bool {
+    extra_display_id().is_some()
+}
+
+/// Whether new sessions start with the tablet as an extra display.
+pub fn extend_wanted() -> bool {
+    EXTEND_WANTED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// `--extend`, or the tablet's choice in its display menu.
+pub fn set_extend_wanted(wanted: bool) {
+    EXTEND_WANTED.store(wanted, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// The tablet drawing area the extra display is shaped for, while there
+/// is one.
+pub fn extra_display_size() -> Option<(u32, u32)> {
+    #[cfg(target_os = "macos")]
+    {
+        EXTRA
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .map(ib_capture::MacVirtualDisplay::size)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        None
+    }
+}
+
+/// Makes the tablet an extra display shaped for its `width × height`
+/// drawing area, or gives the existing one that shape (the tablet was
+/// rotated). Returns its position in [`displays`]; the caller switches to
+/// it.
+pub fn extend(width: u32, height: u32) -> anyhow::Result<usize> {
+    #[cfg(target_os = "macos")]
+    {
+        anyhow::ensure!(width > 0 && height > 0, "the tablet's size isn't known yet");
+        let id = {
+            let mut extra = EXTRA
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            match extra.as_mut() {
+                Some(display) => display.resize(width, height)?,
+                None => {
+                    *extra = Some(ib_capture::MacVirtualDisplay::new(
+                        "Inkbridge tablet",
+                        width,
+                        height,
+                    )?);
+                }
+            }
+            extra.as_ref().map(|d| u64::from(d.id()))
+        };
+        // The system adds the display, and changes its shape, a moment later.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        loop {
+            let found = displays().into_iter().position(|d| {
+                Some(d.id) == id && (d.bounds.width >= d.bounds.height) == (width >= height)
+            });
+            if let Some(index) = found {
+                return Ok(index);
+            }
+            if std::time::Instant::now() > deadline {
+                stop_extending();
+                anyhow::bail!("the extra display didn't appear");
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (width, height);
+        anyhow::bail!("using the tablet as an extra screen works on macOS only so far")
+    }
+}
+
+/// Removes the extra display. Windows on it move to the other displays.
+pub fn stop_extending() {
+    #[cfg(target_os = "macos")]
+    {
+        let gone = EXTRA
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        if let Some(display) = gone {
+            let mut chosen = DISPLAY
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if *chosen == Some(u64::from(display.id())) {
+                *chosen = None;
+            }
+        }
+    }
+}
+
+/// A session begins. Returns the main display if the display that was
+/// being shown is gone (unplugged, or the extra display was removed), so
+/// the caller shows that one instead.
+pub fn session_started() -> Option<ib_capture::Display> {
+    SESSIONS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    let mut chosen = DISPLAY
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let id = (*chosen)?;
+    let all = displays();
+    if all.iter().any(|d| d.id == id) {
+        return None;
+    }
+    *chosen = None;
+    all.into_iter().next()
+}
+
+/// A session ended: the extra display stays for a short while, then goes
+/// unless a session started in between.
+pub fn session_ended() {
+    if !extending() {
+        return;
+    }
+    let session = SESSIONS.load(std::sync::atomic::Ordering::SeqCst);
+    let spawned = std::thread::Builder::new()
+        .name("inkbridge-extra-display".into())
+        .spawn(move || {
+            std::thread::sleep(EXTRA_GRACE);
+            if SESSIONS.load(std::sync::atomic::Ordering::SeqCst) == session {
+                tracing::info!("no tablet came back, removing the extra display");
+                stop_extending();
+            }
+        });
+    if spawned.is_err() {
+        stop_extending();
     }
 }
 

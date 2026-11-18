@@ -56,6 +56,14 @@ Implemented on the MacBook (Apple silicon, macOS 27), tested with the TB331FC ov
   ones stop reading at an unknown message. Checked: the host against two real displays (ignored
   test `the_tablet_switches_displays`), and on the tablet `--display 2`, the "Screen" button
   (a switch takes 120-180 ms) and the pen on the second display.
+- **The tablet as an extra screen:** "Use this tablet as an extra screen" in the tablet's Screen
+  menu, or `--extend` on the host. The host adds a virtual display with the shape of the tablet's
+  drawing area (`CGVirtualDisplay`, a private API: ADR-0008), captures it and puts the pen on it. It
+  follows the tablet's rotation, and stays 15 s after a session ends so a reconnect keeps the
+  windows in place. On the TB331FC: a 2560x1520 display (1280x760 points at 2x), picture
+  1832x1088 with no black bars, about 40 ms capture-to-screen over Wi-Fi. Checked with the ignored
+  tests `an_extra_display_appears_and_goes_away` and `the_tablet_becomes_an_extra_screen`, and on
+  the tablet. Not yet checked: a pen stroke on it.
 - **Permissions:** asked when needed, with an explanation: Screen Recording when a tablet first
   connects, Accessibility at the first pen touch.
 - **Bindings:** the `objc2` crate family (generated from Apple's headers) for all three backends.
@@ -71,7 +79,7 @@ Still to do for M4:
 - `docs/latency.md` rows for macOS (software and VideoToolbox, Wi-Fi).
 - **USB on macOS:** the TB331FC tethers RNDIS-only, which macOS doesn't support, and adb can't carry
   QUIC. Needs the TCP fallback first, then an opt-in adb mode. Wi-Fi only until then.
-- Several displays, permission onboarding UI, notarised bundle (M6), iPad client.
+- Permission onboarding UI, notarised bundle (M6), iPad client.
 
 ## Open issues
 - Windows: root cause of occasional rejected pen events (a resync workaround exists, commit 945d526).
@@ -87,6 +95,8 @@ Still to do for M4:
 - Reconnecting: the pad reconnects by itself over Wi-Fi when the connection drops (host restarted,
   Wi-Fi blinked), and the host lets a reconnecting tablet replace its dead session at once. Over USB
   the user still goes back to the home screen.
+- macOS: a monitor plugged in while the host runs is not offered until the host restarts (Core
+  Graphics reads display modes once per process, ADR-0008).
 - `cargo deny check` hasn't been run on the Mac (not installed there), so the licences of the `objc2`
   crates are unchecked.
 - `docs/latency.md` with measured end-to-end numbers (Wi-Fi vs USB, RTX vs iGPU) is still to write.
