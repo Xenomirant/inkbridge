@@ -53,9 +53,9 @@ class PadActivity : ComponentActivity() {
                 return
             }
             if (!s.isConnected()) {
-                info.text = if (s.host().usb) "Disconnected" else "Connection lost, reconnecting…"
+                info.text = "Connection lost, reconnecting…"
                 info.setTextColor(Color.RED)
-                if (!s.host().usb) reconnect()
+                reconnect()
                 return
             }
             val host = s.host()
@@ -183,7 +183,10 @@ class PadActivity : ComponentActivity() {
     private fun chooseDisplay(session: org.inkbridge.core.Session) {
         val displays = session.displays()
         if (displays.size < 2) return
-        val names = displays.map { "${it.name} · ${it.width}×${it.height}" }.toTypedArray()
+        // An offer (to become an extra screen) has no size yet.
+        val names = displays.map {
+            if (it.width == 0u) it.name else "${it.name} · ${it.width}×${it.height}"
+        }.toTypedArray()
         android.app.AlertDialog.Builder(this)
             .setTitle("Show which screen?")
             .setSingleChoiceItems(names, displays.indexOfFirst { it.current }) { dialog, which ->
@@ -203,8 +206,8 @@ class PadActivity : ComponentActivity() {
     /**
      * The connection dropped (the computer's app restarted, Wi-Fi blinked):
      * keep trying to get it back while the pad is on screen, then rebuild
-     * the pad around the new session. Wi-Fi only: over USB the computer
-     * dials the tablet, which the home screen handles.
+     * the pad around the new session. Over the USB cable link the computer
+     * dials the tablet; otherwise the tablet dials the computer.
      */
     private fun reconnect() {
         if (reconnecting) return
@@ -216,12 +219,20 @@ class PadActivity : ComponentActivity() {
         thread(name = "inkbridge-reconnect") {
             var fresh: org.inkbridge.core.Session? = null
             while (reconnecting && fresh == null) {
-                fresh = runCatching {
-                    org.inkbridge.core.Session.connect(
-                        code, identity, deviceName(), false,
-                        VideoDecoder.screen(metrics.widthPixels, metrics.heightPixels),
-                    )
-                }.getOrNull()
+                val screen = VideoDecoder.screen(metrics.widthPixels, metrics.heightPixels)
+                fresh = Reconnect.attempt(
+                    UsbLink.tetherAddress(),
+                    { ip ->
+                        runCatching {
+                            org.inkbridge.core.Session.acceptUsb(code, identity, deviceName(), ip, USB_WAIT_MS, screen)
+                        }.getOrNull()
+                    },
+                    {
+                        runCatching {
+                            org.inkbridge.core.Session.connect(code, identity, deviceName(), false, screen)
+                        }.getOrNull()
+                    },
+                )
                 if (fresh == null) Thread.sleep(RETRY_MS)
             }
             val session = fresh ?: return@thread
@@ -261,6 +272,9 @@ class PadActivity : ComponentActivity() {
 
     private companion object {
         const val RETRY_MS = 1000L
+
+        /** How long one round waits for the computer to dial over USB. */
+        const val USB_WAIT_MS = 2000u
     }
 
     private fun hideSystemBars() {

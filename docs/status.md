@@ -92,9 +92,11 @@ Still to do for M4:
   deliver it late (p95 up to 720 ms); its send window is now 128 KB, so the writer blocks, the
   pipeline skips frames, and the worst p95 in a 60 s test was 227 ms. Not tried: turning AirDrop and
   Handoff off on the Mac (they make the Wi-Fi radio leave the channel), and a quiet network.
-- Reconnecting: the pad reconnects by itself over Wi-Fi when the connection drops (host restarted,
-  Wi-Fi blinked), and the host lets a reconnecting tablet replace its dead session at once. Over USB
-  the user still goes back to the home screen.
+- Reconnecting: the pad reconnects by itself when the connection drops (host restarted, Wi-Fi
+  blinked), and the host lets a reconnecting tablet replace its dead session at once. With the USB
+  cable link up the pad first waits for the computer to dial, then tries Wi-Fi (not yet tried on a
+  real USB link: the Mac has none). A stroke in progress ends at the drop; the next stroke works
+  (checked by restarting the host during a 9 s stylus stroke).
 - macOS: a monitor plugged in while the host runs is not offered until the host restarts (Core
   Graphics reads display modes once per process, ADR-0008).
 - `cargo deny check` hasn't been run on the Mac (not installed there), so the licences of the `objc2`

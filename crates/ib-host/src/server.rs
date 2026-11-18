@@ -407,7 +407,7 @@ impl Host {
 
     /// The displays the tablet can choose from. When the computer can make
     /// the tablet an extra screen and hasn't yet, that choice comes last.
-    fn display_choices(session: &SessionState) -> Vec<ib_protocol::DisplayInfo> {
+    fn display_choices() -> Vec<ib_protocol::DisplayInfo> {
         let mut choices: Vec<ib_protocol::DisplayInfo> = crate::platform::displays()
             .into_iter()
             .map(|d| ib_protocol::DisplayInfo {
@@ -416,14 +416,14 @@ impl Host {
             })
             .collect();
         if crate::platform::extend_supported() && !crate::platform::extending() {
-            let (width, height) = session.viewport;
+            // No size: the display doesn't exist until it is chosen.
             choices.push(ib_protocol::DisplayInfo {
                 name: "Use this tablet as an extra screen".into(),
                 bounds: Region {
                     x: 0,
                     y: 0,
-                    width,
-                    height,
+                    width: 0,
+                    height: 0,
                 },
             });
         }
@@ -438,7 +438,7 @@ impl Host {
         ctl: &mut ib_transport::Control,
         session: &SessionState,
     ) -> anyhow::Result<()> {
-        let displays = Self::display_choices(session);
+        let displays = Self::display_choices();
         if !session.display_choice || displays.len() < 2 {
             return Ok(());
         }
