@@ -355,6 +355,12 @@ const HARDWARE_RETRIES: u32 = 3;
 ))]
 const HARDWARE_MAX_KBPS: u32 = 25_000;
 
+/// How often a frame is encoded again once the screen stops changing, one
+/// every 50 ms. Screen capture delivers nothing for a still screen, so
+/// without this the tablet keeps the last frame of the motion, as blurry
+/// as the bitrate made it. Costs no latency: nothing else is waiting.
+const REFINE_FRAMES: u8 = 4;
+
 fn run(
     source: Box<dyn ScreenSource>,
     fallback: Option<SourceFactory>,
@@ -404,6 +410,9 @@ struct Pipeline {
     /// The encoder skipped the last frame: encode it again when the screen
     /// stays still, so the tablet ends up with the current picture.
     resend: bool,
+    /// How many more times to encode the last frame again while the screen
+    /// stays still (see [`REFINE_FRAMES`]).
+    refine: u8,
     /// When the bitrate was last lowered because the network was behind.
     last_cut: Option<std::time::Instant>,
 }
@@ -429,6 +438,7 @@ impl Pipeline {
             frame_no: 0,
             last: None,
             resend: false,
+            refine: 0,
             last_cut: None,
         })
     }
@@ -456,8 +466,23 @@ impl Pipeline {
     /// a keyframe is due on a static screen.
     fn next_input(&mut self) -> anyhow::Result<Option<Frame>> {
         Ok(match self.source.next_frame(Duration::from_millis(50))? {
-            Some(f) => Some(f),
+            Some(f) => {
+                self.refine = REFINE_FRAMES;
+                Some(f)
+            }
             None if self.force_key || self.resend => self.last.clone(),
+            None if self.refine > 0 => {
+                // The screen stopped changing: the last frame was encoded
+                // at whatever quality the motion before it allowed, and no
+                // new frame will come to improve it. Encode it again so
+                // the still picture gets sharp. Stamped as new, so it
+                // doesn't count as a late frame on the tablet.
+                self.refine -= 1;
+                self.last.clone().map(|mut f| {
+                    f.capture_t_us = ib_clock::now_us();
+                    f
+                })
+            }
             None => None,
         })
     }
@@ -700,6 +725,35 @@ mod tests {
         for (i, c) in chunks.iter().enumerate().skip(1) {
             assert_eq!(c.frame_no, chunks[i - 1].frame_no + 1, "chunk {i}");
         }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_still_screen_is_refined_a_few_times_then_left_alone() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(16);
+        let region = Region {
+            x: 0,
+            y: 0,
+            width: 128,
+            height: 80,
+        };
+        let p = VideoPipeline::start_with(
+            Box::new(FakeScreenSource::still_after(3)),
+            None,
+            region,
+            (1920, 1080),
+            tx,
+        )
+        .unwrap();
+        let mut chunks = Vec::new();
+        while let Ok(Some(c)) = tokio::time::timeout(Duration::from_millis(600), rx.recv()).await {
+            chunks.push(c);
+        }
+        drop(p);
+        assert_eq!(chunks.len(), 3 + usize::from(REFINE_FRAMES));
+        // Refinements are ordinary frames with their own (later) time.
+        let times: Vec<u64> = chunks.iter().map(|c| c.capture_t_us).collect();
+        assert!(times.windows(2).all(|w| w[0] < w[1]), "{times:?}");
+        assert!(chunks[3..].iter().all(|c| c.kind != FrameKind::Key));
     }
 
     #[test]

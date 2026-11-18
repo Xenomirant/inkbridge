@@ -177,6 +177,19 @@ pub fn platform_source() -> Result<Box<dyn ScreenSource>, CaptureError> {
 pub struct FakeScreenSource {
     region: Option<Region>,
     frame_no: u64,
+    /// The screen stops changing after this many frames.
+    still_after: Option<u64>,
+}
+
+impl FakeScreenSource {
+    /// A screen that changes `frames` times and then stays still (no
+    /// further frames, as the real backends behave).
+    pub fn still_after(frames: u64) -> Self {
+        Self {
+            still_after: Some(frames),
+            ..Self::default()
+        }
+    }
 }
 
 impl ScreenSource for FakeScreenSource {
@@ -203,10 +216,14 @@ impl ScreenSource for FakeScreenSource {
         Ok(())
     }
 
-    fn next_frame(&mut self, _timeout: Duration) -> Result<Option<Frame>, CaptureError> {
+    fn next_frame(&mut self, timeout: Duration) -> Result<Option<Frame>, CaptureError> {
         let region = self
             .region
             .ok_or_else(|| CaptureError::Failed("capture not started".into()))?;
+        if self.still_after.is_some_and(|n| self.frame_no >= n) {
+            std::thread::sleep(timeout);
+            return Ok(None);
+        }
         self.frame_no += 1;
         let shade = (self.frame_no % 256) as u8;
         let px = (region.width as usize) * (region.height as usize);
