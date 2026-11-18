@@ -54,8 +54,8 @@ Implemented on the MacBook (Apple silicon, macOS 27), tested with the TB331FC ov
   Regions stay relative to the shown display; the pen sink adds its origin. Protocol 0.2 adds
   `Displays` and `SelectDisplay`; the host sends the list only to apps that speak 0.2, because older
   ones stop reading at an unknown message. Checked: the host against two real displays (ignored
-  test `the_tablet_switches_displays`), and `--display 2` on the tablet. Not yet checked on the
-  tablet: the button itself, and the pen on the second display.
+  test `the_tablet_switches_displays`), and on the tablet `--display 2`, the "Screen" button
+  (a switch takes 120-180 ms) and the pen on the second display.
 - **Permissions:** asked when needed, with an explanation: Screen Recording when a tablet first
   connects, Accessibility at the first pen touch.
 - **Bindings:** the `objc2` crate family (generated from Apple's headers) for all three backends.
