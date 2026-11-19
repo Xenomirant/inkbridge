@@ -41,7 +41,22 @@ class Storage(context: Context) {
         save(PairedHosts.remember(hosts(nowMs), PairedHost(code, name, fingerprint, nowMs)))
     }
 
-    fun forget(fingerprint: String) = save(PairedHosts.forget(hosts(), fingerprint))
+    fun forget(fingerprint: String) {
+        save(PairedHosts.forget(hosts(), fingerprint))
+        val open = openPad
+        if (open != null && runCatching { parsePairingCode(open).hostFingerprint }.getOrNull() == fingerprint) {
+            openPad = null
+        }
+    }
+
+    /**
+     * The pairing code of the computer whose pad is open, while it is: set
+     * when the pad opens, cleared when the user leaves it. If Android stops
+     * the app meanwhile (an update, low memory), the next start reconnects.
+     */
+    var openPad: String?
+        get() = prefs.getString(KEY_OPEN_PAD, null)
+        set(value) = prefs.edit().putString(KEY_OPEN_PAD, value).apply()
 
     private fun save(hosts: List<PairedHost>) =
         prefs.edit().putString(KEY_HOSTS, PairedHosts.encode(hosts)).apply()
@@ -62,6 +77,7 @@ class Storage(context: Context) {
         const val KEY_KEY = "identity.key"
         const val KEY_CODE = "paired.code"
         const val KEY_NAME = "paired.name"
+        const val KEY_OPEN_PAD = "open_pad"
         const val KEY_HOSTS = "paired.hosts"
     }
 }

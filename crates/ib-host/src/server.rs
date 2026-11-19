@@ -81,6 +81,16 @@ impl LinkLog {
     }
 }
 
+/// A tablet that tries QUIC and TCP at once closes the one that loses the
+/// race: normal, so not a warning. Other failures are.
+fn log_failed_attempt(e: &ib_transport::TransportError) {
+    if e.closed_by_peer() {
+        tracing::debug!("connection attempt closed by the tablet: {e}");
+    } else {
+        tracing::warn!("connection attempt failed: {e}");
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct HostConfig {
     pub host_name: String,
@@ -207,7 +217,7 @@ impl Host {
                 match incoming {
                     Ok(conn) => conn,
                     Err(e) => {
-                        tracing::warn!("connection attempt failed: {e}");
+                        log_failed_attempt(&e);
                         continue;
                     }
                 }
@@ -245,7 +255,7 @@ impl Host {
                             old.close("another tablet is waiting");
                         }
                     }
-                    Err(e) => tracing::warn!("connection attempt failed: {e}"),
+                    Err(e) => log_failed_attempt(&e),
                 }
             }
         }

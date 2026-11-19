@@ -177,6 +177,8 @@ class PadActivity : ComponentActivity() {
 
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
+                // Left on purpose: don't reconnect at the next start.
+                Storage(this@PadActivity).openPad = null
                 SessionHolder.session = null
                 finish()
             }

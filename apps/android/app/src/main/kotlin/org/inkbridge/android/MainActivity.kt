@@ -33,6 +33,14 @@ class MainActivity : ComponentActivity() {
         setContentView(buildUi())
         refresh()
         handleIntent(intent)
+        // Android stopped the app while a pad was open (an update, low
+        // memory): carry on where the user was.
+        if (savedInstanceState == null && SessionHolder.session == null) {
+            storage.openPad?.let { code ->
+                val name = storage.hosts().firstOrNull { it.code == code }?.name ?: "computer"
+                connect(code, pair = false, label = name)
+            }
+        }
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -206,6 +214,7 @@ class MainActivity : ComponentActivity() {
         SessionHolder.close()
         SessionHolder.session = session
         SessionHolder.code = code
+        storage.openPad = code
         status.text = "Connected to ${host.name}" + if (host.usb) " over USB" else ""
         startActivity(Intent(this, PadActivity::class.java))
     }

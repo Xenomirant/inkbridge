@@ -66,3 +66,14 @@ pub enum TransportError {
     #[error("TCP connection: {0}")]
     Tcp(String),
 }
+
+impl TransportError {
+    /// The peer closed the connection on purpose (for example a tablet
+    /// dropping the QUIC attempt that lost the race against TCP).
+    pub fn closed_by_peer(&self) -> bool {
+        matches!(
+            self,
+            Self::Connection(quinn::ConnectionError::ApplicationClosed(_)) | Self::Closed
+        )
+    }
+}
