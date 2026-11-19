@@ -1,0 +1,53 @@
+# cargo-deny for the desktop app: the project's rules (../../deny.toml) plus
+# the exceptions its Tauri dependencies need.
+# cargo-deny: licence compatibility with GPL-3.0-or-later, security advisories,
+# and supply-chain hygiene. Run locally with `cargo deny check`.
+
+[advisories]
+version = 2
+yanked = "deny"
+ignore = [
+    # basic-toml is unmaintained (not vulnerable). It comes in only through
+    # uniffi_bindgen → askama at build time, parsing our own uniffi.toml.
+    # uniffi 0.32.2 / askama 0.16.1 are the latest releases; drop this when
+    # an update removes the dependency.
+    { id = "RUSTSEC-2026-0374", reason = "build-time only via uniffi_bindgen; no fixed release yet" },
+    # Desktop app only (apps/desktop), Linux-only, through Tauri; no fixed release exists.
+    # Unmaintained, not vulnerable: GTK 0.18 bindings' macros, and zbus 5's crates used by
+    # Tauri's notification and single-instance plugins. Revisit with Tauri updates.
+    { id = "RUSTSEC-2024-0370", reason = "proc-macro-error via gtk 0.18 (Tauri, Linux); build-time macros" },
+    { id = "RUSTSEC-2026-0370", reason = "zvariant via zbus 5 (Tauri plugins, Linux)" },
+    { id = "RUSTSEC-2026-0371", reason = "zbus_names via zbus 5 (Tauri plugins, Linux)" },
+    { id = "RUSTSEC-2026-0372", reason = "zvariant_derive via zbus 5 (Tauri plugins, Linux)" },
+]
+
+[licenses]
+version = 2
+confidence-threshold = 0.9
+unused-allowed-license = "allow"
+# Permissive and weak-copyleft licences compatible with distributing the
+# combined work under GPL-3.0-or-later.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "Unicode-3.0",
+    "MPL-2.0",
+    "CC0-1.0",
+    "GPL-3.0-or-later",
+    "LGPL-2.1-or-later",
+    "LGPL-3.0-or-later",
+]
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+allow-wildcard-paths = true
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
