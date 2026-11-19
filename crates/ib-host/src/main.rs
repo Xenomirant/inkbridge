@@ -1,4 +1,5 @@
-//! `inkbridge-host`: command-line host for M1 (pen input, no video yet).
+//! `inkbridge-host`: the host on the command line (the tray app runs the
+//! same [`ib_host::service::Service`]).
 //!
 //! Usage: `inkbridge-host [--port N] [--pair] [--display N] [--extend] [--fake-sink]`,
 //! `--list-paired`, `--forget N|all`, `--adb` (USB through adb reverse)
@@ -8,11 +9,8 @@
 //!   with `--sharp` it is shaped so the tablet shows it pixel for pixel;
 //! - `--fake-sink`: log pen events instead of injecting them (testing).
 
-use std::net::{Ipv6Addr, SocketAddr};
-
-use ib_host::pen_thread::{self, SinkFactory};
-use ib_host::{Host, HostConfig, platform, storage};
-use ib_inject::{FakePenSink, PenSink};
+use ib_host::platform;
+use ib_host::service::{Service, ServiceOptions};
 use ib_session::PairingStore;
 use ib_transport::PairingOffer;
 use tracing_subscriber::EnvFilter;
@@ -142,7 +140,7 @@ fn report(result: anyhow::Result<()>) -> i32 {
 
 fn paired_store() -> anyhow::Result<PairingStore> {
     Ok(PairingStore::load(
-        &storage::config_dir().join("paired-devices.txt"),
+        &ib_host::storage::config_dir().join("paired-devices.txt"),
     )?)
 }
 
@@ -281,137 +279,42 @@ async fn main() -> anyhow::Result<()> {
         )
         .init();
     let args = parse_args()?;
-    platform::init_process();
-    // After a crash or restart the driver's monitor may be left on the
-    // desktop; it belongs there only while a tablet is an extra screen.
-    #[cfg(windows)]
-    if !platform::extend_wanted()
-        && let Err(e) = ib_capture::detach_virtual_monitor()
-    {
-        tracing::warn!("virtual display: {e}");
-    }
-
-    let dir = storage::config_dir();
-    let identity = storage::load_or_create_identity(&dir)?;
-    let store = PairingStore::load(&dir.join("paired-devices.txt"))?;
-    #[cfg(all(target_os = "linux", feature = "wayland"))]
-    if ib_host::wayland::is_wayland_session() && !args.fake_sink {
-        // Pointer control is only needed when the pressure pen (uinput)
-        // isn't set up; asking for less keeps the desktop's dialog simple.
-        let probe = ib_geometry::Region {
-            x: 0,
-            y: 0,
-            width: 1920,
-            height: 1080,
-        };
-        let uinput = ib_inject::UinputPenSink::new(probe).is_ok();
-        if let Err(e) = ib_host::wayland::connect(&dir, !uinput) {
-            tracing::warn!("Wayland screen sharing unavailable: {e:#}");
-        }
-    }
-    let region = match args.display {
-        Some(number) => platform::select_display(number)?,
-        None => platform::primary_display(),
-    };
-    platform::explain_permissions();
-
-    let make_sink: SinkFactory = if args.fake_sink {
-        Box::new(|| Ok(Box::new(LoggingSink(FakePenSink::default())) as Box<dyn PenSink>))
-    } else {
-        Box::new(move || platform::pen_sink(region))
-    };
-    // Advertise what the backend actually delivers (probe it once).
-    let (features, keyboard) = if args.fake_sink {
-        let fake = FakePenSink::default();
-        (fake.features(), fake.keyboard())
-    } else {
-        platform::pen_sink(region).map_or_else(
-            |e| {
-                tracing::warn!("{e}");
-                (ib_protocol::PenFeatures::default(), false)
-            },
-            |s| (s.features(), s.keyboard()),
-        )
-    };
-    let (pen_tx, pen_handle) = pen_thread::spawn(make_sink, region)?;
-
-    let host_name = platform::host_name();
-    let host_label = host_name.clone();
-    let bind = SocketAddr::new(Ipv6Addr::UNSPECIFIED.into(), args.port);
-    let config = HostConfig {
-        host_name,
-        bind,
-        region,
-        pen_features: features,
-        keyboard,
-        video: platform::video_supported(),
-    };
-    let host = Host::new(identity, config, store, pen_tx.clone())?;
-    tracing::info!(addr = %host.local_addr()?, ?region, config = %dir.display(), "host listening");
-    if args.adb {
-        let adb = ib_host::adb::find_adb().ok_or_else(|| {
-            anyhow::anyhow!(
-                "--adb: adb not found. Install Android's platform tools and put adb on the PATH \
-                 (or set ANDROID_HOME)."
-            )
-        })?;
-        tracing::info!(adb = %adb.display(), "--adb: tablets on a USB cable with USB debugging connect through it");
-        ib_host::adb::keep_reversed(adb, host.local_addr()?.port());
-    }
-
-    if args.force_pairing || host.paired_count().await == 0 {
-        show_offer(&host.open_pairing().await?, &dir, &host_label);
+    let service = Service::start(&ServiceOptions {
+        port: args.port,
+        display: args.display,
+        adb: args.adb,
+        fake_sink: args.fake_sink,
+    })?;
+    if args.force_pairing || service.host().paired_count().await == 0 {
+        show_offer(
+            &service.open_pairing().await?,
+            service.config_dir(),
+            service.name(),
+        );
     } else {
         println!("Tablets already paired; run with --pair to pair another one.");
     }
-
-    let run = host
-        .clone()
-        .run(|name| println!("Paired with {name}. Pairing is now closed."));
-    tokio::select! {
-        () = run => {}
-        _ = tokio::signal::ctrl_c() => println!("Shutting down."),
+    // Tell the user when a tablet pairs or comes and goes.
+    let mut status = service.status();
+    let mut last = status.borrow().clone();
+    loop {
+        tokio::select! {
+            changed = status.changed() => {
+                if changed.is_err() {
+                    break;
+                }
+                let now = status.borrow().clone();
+                if last.pairing_open && !now.pairing_open && now.tablet.is_some() {
+                    println!("Paired. Pairing is now closed.");
+                }
+                last = now;
+            }
+            _ = tokio::signal::ctrl_c() => {
+                println!("Shutting down.");
+                break;
+            }
+        }
     }
-    let _ = pen_tx.send(pen_thread::PenInput::Shutdown);
-    let _ = pen_handle.join();
+    service.shutdown();
     Ok(())
-}
-
-/// Fake sink that logs each injected event (for `--fake-sink`).
-struct LoggingSink(FakePenSink);
-
-impl PenSink for LoggingSink {
-    fn name(&self) -> &'static str {
-        "logging-fake"
-    }
-    fn features(&self) -> ib_protocol::PenFeatures {
-        self.0.features()
-    }
-    fn emit(
-        &mut self,
-        s: &ib_protocol::PenSample,
-        at: ib_geometry::DesktopPoint,
-    ) -> Result<(), ib_inject::InjectError> {
-        tracing::info!(x = at.x, y = at.y, pressure = s.pressure, state = ?s.state, "pen");
-        self.0.emit(s, at)
-    }
-    fn release(&mut self) -> Result<(), ib_inject::InjectError> {
-        tracing::info!("pen released");
-        self.0.release()
-    }
-    fn keyboard(&self) -> bool {
-        true
-    }
-    fn type_text(&mut self, text: &str) -> Result<(), ib_inject::InjectError> {
-        tracing::info!(text, "typed");
-        self.0.type_text(text)
-    }
-    fn key(
-        &mut self,
-        key: ib_protocol::Key,
-        modifiers: ib_protocol::Modifiers,
-    ) -> Result<(), ib_inject::InjectError> {
-        tracing::info!(?key, ?modifiers, "key");
-        self.0.key(key, modifiers)
-    }
 }

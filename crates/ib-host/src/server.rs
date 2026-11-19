@@ -108,9 +108,32 @@ pub struct HostConfig {
 /// later.
 pub const PAIRING_VALID: std::time::Duration = std::time::Duration::from_mins(5);
 
+/// What the host is doing, for a user interface (the tray app).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct HostStatus {
+    /// The tablet in session, if one is connected.
+    pub tablet: Option<TabletStatus>,
+    /// Whether a pairing code is open (shown and not yet used or expired).
+    pub pairing_open: bool,
+}
+
+/// The connected tablet.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TabletStatus {
+    pub name: String,
+    /// Over the USB cable (tethering or adb), rather than Wi-Fi.
+    pub usb: bool,
+    /// On the TCP fallback rather than QUIC.
+    pub tcp: bool,
+}
+
 /// A running host: endpoint, paired devices and the current pairing secret.
 #[derive(Debug)]
 pub struct Host {
+    /// Published status; see [`Host::status`].
+    status: tokio::sync::watch::Sender<HostStatus>,
+    /// The connection of the session in progress (for its round trip).
+    link: std::sync::Mutex<Option<Connection>>,
     endpoint: HostEndpoint,
     identity: Identity,
     config: HostConfig,
@@ -150,6 +173,8 @@ impl Host {
         };
         let display = std::sync::Mutex::new(config.region);
         Ok(Arc::new(Self {
+            status: tokio::sync::watch::Sender::new(HostStatus::default()),
+            link: std::sync::Mutex::new(None),
             endpoint,
             identity,
             config,
@@ -170,6 +195,7 @@ impl Host {
     pub async fn open_pairing(&self) -> anyhow::Result<PairingOffer> {
         let secret = PairingSecret::random();
         *self.pairing.lock().await = Some((secret, std::time::Instant::now()));
+        self.status.send_modify(|s| s.pairing_open = true);
         let port = self.local_addr()?.port();
         Ok(PairingOffer {
             addrs: advertised_addrs(port),
@@ -184,8 +210,54 @@ impl Host {
         if pairing.is_some_and(|(_, made)| made.elapsed() > PAIRING_VALID) {
             tracing::info!("the pairing code expired; run with --pair for a new one");
             *pairing = None;
+            self.status.send_modify(|s| s.pairing_open = false);
         }
         pairing.map(|(secret, _)| secret)
+    }
+
+    /// A session started: the status shows its tablet.
+    fn publish_tablet(&self, conn: &Connection, name: &str, transport: TransportKind) {
+        *self
+            .link
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(conn.clone());
+        self.status.send_modify(|s| {
+            s.tablet = Some(TabletStatus {
+                name: name.to_owned(),
+                usb: transport == TransportKind::Usb,
+                tcp: conn.is_tcp(),
+            });
+        });
+    }
+
+    /// Follows the host's status (tablet connected, pairing open).
+    pub fn status(&self) -> tokio::sync::watch::Receiver<HostStatus> {
+        self.status.subscribe()
+    }
+
+    /// Round trip to the connected tablet.
+    pub fn tablet_rtt(&self) -> Option<std::time::Duration> {
+        self.link
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .map(Connection::rtt)
+    }
+
+    /// Closes pairing (the code on screen stops working).
+    pub async fn close_pairing(&self) {
+        *self.pairing.lock().await = None;
+        self.status.send_modify(|s| s.pairing_open = false);
+    }
+
+    /// The paired tablets.
+    pub async fn paired_devices(&self) -> Vec<ib_session::PairedDevice> {
+        self.store.lock().await.devices().to_vec()
+    }
+
+    /// Unpairs a tablet; it needs a pairing code to connect again.
+    pub async fn forget(&self, fingerprint: ib_transport::Fingerprint) -> anyhow::Result<()> {
+        Ok(self.store.lock().await.remove(fingerprint)?)
     }
 
     pub async fn paired_count(&self) -> usize {
@@ -324,6 +396,11 @@ impl Host {
         let _ = self.pen.send(PenInput::Disconnected);
         crate::platform::session_ended();
         conn.close("session over");
+        *self
+            .link
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+        self.status.send_modify(|s| s.tablet = None);
         tracing::info!("tablet disconnected");
     }
 
@@ -364,9 +441,10 @@ impl Host {
         if newly_paired {
             // One-time secret: never accept it twice, not even from a
             // tablet that was paired before.
-            *self.pairing.lock().await = None;
+            self.close_pairing().await;
         }
         tracing::info!(device = %hello.device_name, "session started");
+        self.publish_tablet(conn, &hello.device_name, transport);
         self.restore_extra_display(
             (hello.screen_width, hello.screen_height),
             (hello.caps.max_width, hello.caps.max_height),

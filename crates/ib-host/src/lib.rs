@@ -13,6 +13,7 @@ pub mod scroll;
 #[cfg(all(target_os = "linux", feature = "wayland", feature = "vaapi"))]
 pub mod selftest;
 pub mod server;
+pub mod service;
 pub mod storage;
 pub mod touch;
 pub mod usb;
@@ -24,4 +25,4 @@ pub mod video;
 #[cfg(all(target_os = "linux", feature = "wayland"))]
 pub mod wayland;
 
-pub use server::{Host, HostConfig};
+pub use server::{Host, HostConfig, HostStatus, TabletStatus};
