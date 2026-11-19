@@ -16,6 +16,10 @@ pub mod server;
 pub mod storage;
 pub mod touch;
 pub mod usb;
+#[cfg(windows)]
+mod vdd_device;
+#[cfg(windows)]
+pub mod vdd_setup;
 pub mod video;
 #[cfg(all(target_os = "linux", feature = "wayland"))]
 pub mod wayland;

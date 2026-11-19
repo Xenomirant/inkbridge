@@ -862,6 +862,7 @@ dependencies = [
  "libc",
  "openh264",
  "qrcode",
+ "ring",
  "thiserror",
  "tokio",
  "tracing",

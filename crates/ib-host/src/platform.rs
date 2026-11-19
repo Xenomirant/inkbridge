@@ -261,7 +261,15 @@ pub fn displays() -> Vec<ib_capture::Display> {
     }
     #[cfg(windows)]
     match ib_capture::windows_displays() {
-        Ok(all) if !all.is_empty() => return all,
+        Ok(mut all) if !all.is_empty() => {
+            let extra = extra_display_id();
+            for d in &mut all {
+                if Some(d.id) == extra {
+                    EXTRA_NAME.clone_into(&mut d.name);
+                }
+            }
+            return all;
+        }
         Ok(_) => {}
         Err(e) => tracing::warn!("could not list the displays: {e}"),
     }
@@ -283,10 +291,16 @@ pub const EXTRA_NAME: &str = "This tablet (extra screen)";
 /// reconnects finds its windows where they were.
 const EXTRA_GRACE: std::time::Duration = std::time::Duration::from_secs(15);
 
-/// The extra display the tablet is, while it is one (macOS).
+/// The OS's virtual display: `CGVirtualDisplay` on macOS, the Virtual
+/// Display Driver on Windows (an Advanced option).
 #[cfg(target_os = "macos")]
-static EXTRA: std::sync::Mutex<Option<(ib_capture::MacVirtualDisplay, ExtraScreen)>> =
-    std::sync::Mutex::new(None);
+type VirtualDisplay = ib_capture::MacVirtualDisplay;
+#[cfg(windows)]
+type VirtualDisplay = ib_capture::WindowsVirtualDisplay;
+
+/// The extra display the tablet is, while it is one.
+#[cfg(any(target_os = "macos", windows))]
+static EXTRA: std::sync::Mutex<Option<(VirtualDisplay, ExtraScreen)>> = std::sync::Mutex::new(None);
 /// Whether new sessions should make the tablet an extra display.
 static EXTEND_WANTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 /// Whether that display should be the pixel-for-pixel kind.
@@ -295,7 +309,7 @@ static SHARP_WANTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBo
 static SESSIONS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 fn extra_display_id() -> Option<u64> {
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     {
         EXTRA
             .lock()
@@ -303,7 +317,7 @@ fn extra_display_id() -> Option<u64> {
             .as_ref()
             .map(|(d, _)| u64::from(d.id()))
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", windows)))]
     {
         None
     }
@@ -326,11 +340,11 @@ pub struct ExtraScreen {
 
 /// Whether this computer can make the tablet an extra display.
 pub fn extend_supported() -> bool {
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     {
-        ib_capture::MacVirtualDisplay::supported()
+        VirtualDisplay::supported()
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", windows)))]
     {
         false
     }
@@ -363,7 +377,7 @@ pub fn set_sharp_wanted(wanted: bool) {
 
 /// What the extra display was made for, while there is one.
 pub fn extra_screen() -> Option<ExtraScreen> {
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     {
         EXTRA
             .lock()
@@ -371,7 +385,7 @@ pub fn extra_screen() -> Option<ExtraScreen> {
             .as_ref()
             .map(|(_, made_for)| *made_for)
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", windows)))]
     {
         None
     }
@@ -382,7 +396,7 @@ pub fn extra_screen() -> Option<ExtraScreen> {
 /// was chosen). Returns its position in [`displays`]; the caller switches
 /// to it.
 pub fn extend(wanted: ExtraScreen) -> anyhow::Result<usize> {
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     {
         let (width, height) = wanted.area;
         anyhow::ensure!(width > 0 && height > 0, "the tablet's size isn't known yet");
@@ -398,7 +412,7 @@ pub fn extend(wanted: ExtraScreen) -> anyhow::Result<usize> {
                 display.resize(width, height, wanted.picture)?;
                 *made_for = wanted;
             } else {
-                let display = ib_capture::MacVirtualDisplay::new(
+                let display = VirtualDisplay::new(
                     "Inkbridge tablet",
                     width,
                     height,
@@ -425,16 +439,16 @@ pub fn extend(wanted: ExtraScreen) -> anyhow::Result<usize> {
             std::thread::sleep(std::time::Duration::from_millis(50));
         }
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", windows)))]
     {
         let _ = wanted;
-        anyhow::bail!("using the tablet as an extra screen works on macOS only so far")
+        anyhow::bail!("using the tablet as an extra screen works on macOS and Windows only so far")
     }
 }
 
 /// Removes the extra display. Windows on it move to the other displays.
 pub fn stop_extending() {
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     {
         let gone = EXTRA
             .lock()

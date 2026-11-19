@@ -60,7 +60,7 @@ fn parse_args() -> anyhow::Result<Args> {
             "--extend" => {
                 anyhow::ensure!(
                     platform::extend_supported(),
-                    "using the tablet as an extra screen works on macOS only so far"
+                    "the tablet as an extra screen needs macOS, or on Windows the virtual display driver (`--install-virtual-display`)"
                 );
                 platform::set_extend_wanted(true);
             }
@@ -77,6 +77,12 @@ fn parse_args() -> anyhow::Result<Args> {
                 std::process::exit(run_forget(&which));
             }
             "--fake-sink" => args.fake_sink = true,
+            #[cfg(windows)]
+            "--install-virtual-display" => std::process::exit(report(
+                ib_host::vdd_setup::check_platform().and_then(|()| ib_host::vdd_setup::install()),
+            )),
+            #[cfg(windows)]
+            "--remove-virtual-display" => std::process::exit(report(ib_host::vdd_setup::remove())),
             "--fix-usb-routing" => std::process::exit(run_routing(true)),
             "--undo-usb-routing" => std::process::exit(run_routing(false)),
             #[cfg(all(target_os = "linux", feature = "wayland", feature = "vaapi"))]
@@ -101,6 +107,8 @@ fn parse_args() -> anyhow::Result<Args> {
                      inkbridge-host --adb                USB without tethering (macOS, or tethering off): needs adb and USB debugging\n\
                      inkbridge-host --list-paired        list the paired tablets (forgotten after 90 days unused)\n\
                      inkbridge-host --forget N|all       unpair tablet N of --list-paired, or every tablet\n\
+                     inkbridge-host --install-virtual-display  Windows: let the tablet be an extra screen (third-party driver, asks for admin once)\n\
+                     inkbridge-host --remove-virtual-display   Windows: undo --install-virtual-display\n\
                      inkbridge-host --fix-usb-routing    keep internet traffic off USB-tethered tablets (asks for admin once)\n\
                      inkbridge-host --undo-usb-routing   restore Windows' automatic routing for them\n\
                      inkbridge-host --setup-uinput       Linux: allow pen pressure via a virtual tablet (asks for admin once)\n\
@@ -113,6 +121,18 @@ fn parse_args() -> anyhow::Result<Args> {
         }
     }
     Ok(args)
+}
+
+/// Prints an error, if any; the exit code for it.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn report(result: anyhow::Result<()>) -> i32 {
+    match result {
+        Ok(()) => 0,
+        Err(e) => {
+            eprintln!("{e:#}");
+            1
+        }
+    }
 }
 
 fn paired_store() -> anyhow::Result<PairingStore> {

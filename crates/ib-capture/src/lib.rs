@@ -23,6 +23,13 @@ mod macos_virtual;
 pub use macos_virtual::{MacVirtualDisplay, virtual_modes};
 #[cfg(windows)]
 mod windows;
+#[cfg(windows)]
+mod windows_virtual;
+#[cfg(windows)]
+pub use windows_virtual::{
+    COMMON_MODES, WindowsVirtualDisplay, settings_modes as vdd_settings_modes,
+    settings_xml as vdd_settings_xml,
+};
 #[cfg(target_os = "linux")]
 mod x11;
 #[cfg(windows)]

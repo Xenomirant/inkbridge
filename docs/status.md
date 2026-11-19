@@ -114,6 +114,15 @@ Still to do for M4:
   it pressed for Win+key), Ctrl/Alt/Shift (stay pressed for the next key), arrows, Del, Enter. A
   hardware keyboard on the tablet works too. macOS (CGEvent) and Linux (uinput/portal) still say "no
   keyboard": to do.
+- **The tablet as an extra screen on Windows (Advanced, one admin prompt):**
+  `--install-virtual-display` installs the third-party Virtual Display Driver (MIT, signed by SignPath
+  Foundation; pinned release and SHA-256, signature checked) with no monitor turned on;
+  `--remove-virtual-display` undoes it. The host turns one virtual monitor on (tablet-shaped, right of
+  the main screen) only while the tablet is an extra screen, through the driver's control pipe, and
+  adds missing tablet shapes to the driver's settings (`%ProgramData%\Inkbridge\VirtualDisplay`).
+  Note: the driver's pipe accepts commands from any local program. Checked: install on the PC and the
+  ignored test `a_virtual_monitor_appears_and_goes_away`. x64 only. Not yet: Windows display scaling
+  for the new monitor is Windows' default (change it in Settings > Display; Windows remembers it).
 - **Security:** a pairing code works for 5 minutes after it is shown (and once). The host's private
   key file is owner-only on macOS/Linux (tightened on load for older installs).
 
