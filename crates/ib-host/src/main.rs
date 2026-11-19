@@ -229,7 +229,10 @@ fn show_offer(offer: &PairingOffer, dir: &std::path::Path, host_name: &str) {
         }
         Err(e) => tracing::warn!("could not render QR code: {e}"),
     }
-    println!("Pairing code: {uri}\n");
+    println!(
+        "Pairing code: {uri}\nIt works once, for the next {} minutes; run with --pair for a new one.\n",
+        ib_host::server::PAIRING_VALID.as_secs() / 60
+    );
     // A real image scans far more reliably than terminal characters.
     match ib_host::pairing_page::write(dir, offer, host_name) {
         Ok(page) => {

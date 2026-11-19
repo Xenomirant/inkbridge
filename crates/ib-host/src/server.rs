@@ -91,6 +91,11 @@ pub struct HostConfig {
     pub video: bool,
 }
 
+/// How long a pairing code works after it is shown: long enough to find
+/// the tablet and scan, short enough that a photo of the screen is useless
+/// later.
+pub const PAIRING_VALID: std::time::Duration = std::time::Duration::from_mins(5);
+
 /// A running host: endpoint, paired devices and the current pairing secret.
 #[derive(Debug)]
 pub struct Host {
@@ -98,8 +103,9 @@ pub struct Host {
     identity: Identity,
     config: HostConfig,
     store: Mutex<PairingStore>,
-    /// Secret shown in the current QR code; `None` = pairing closed.
-    pairing: Mutex<Option<PairingSecret>>,
+    /// Secret shown in the current QR code and when it was made; `None` =
+    /// pairing closed.
+    pairing: Mutex<Option<(PairingSecret, std::time::Instant)>>,
     pen: Sender<PenInput>,
     /// One tablet at a time (there is one pen): held for a session's life.
     session: Mutex<()>,
@@ -151,13 +157,23 @@ impl Host {
     /// Opens pairing with a fresh one-time secret and returns the QR offer.
     pub async fn open_pairing(&self) -> anyhow::Result<PairingOffer> {
         let secret = PairingSecret::random();
-        *self.pairing.lock().await = Some(secret);
+        *self.pairing.lock().await = Some((secret, std::time::Instant::now()));
         let port = self.local_addr()?.port();
         Ok(PairingOffer {
             addrs: advertised_addrs(port),
             fingerprint: self.identity.fingerprint(),
             secret,
         })
+    }
+
+    /// The secret of the code on screen, unless it has expired.
+    async fn pairing_secret(&self) -> Option<PairingSecret> {
+        let mut pairing = self.pairing.lock().await;
+        if pairing.is_some_and(|(_, made)| made.elapsed() > PAIRING_VALID) {
+            tracing::info!("the pairing code expired; run with --pair for a new one");
+            *pairing = None;
+        }
+        pairing.map(|(secret, _)| secret)
     }
 
     pub async fn paired_count(&self) -> usize {
@@ -197,7 +213,7 @@ impl Host {
             let _slot = self.session.lock().await;
             // A tablet on this computer's own loopback came through
             // `adb reverse`: a USB cable.
-            let kind = if conn.is_tcp() && conn.remote_addr().ip().is_loopback() {
+            let kind = if conn.is_tcp() && conn.remote_addr().ip().to_canonical().is_loopback() {
                 TransportKind::Usb
             } else {
                 TransportKind::Wifi
@@ -328,7 +344,7 @@ impl Host {
             transport,
         };
 
-        let pending = *self.pairing.lock().await;
+        let pending = self.pairing_secret().await;
         let (hello, newly_paired) = {
             let mut store = self.store.lock().await;
             host_handshake(&mut ctl, peer, &settings, &mut store, pending).await?
@@ -1202,6 +1218,39 @@ mod tests {
             assert_eq!(hello.transport, ib_protocol::TransportKind::Usb);
             conn.close("done");
         }
+    }
+
+    /// A code that has been on the screen too long no longer pairs.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_expired_pairing_code_is_refused() {
+        let identity = Identity::generate().unwrap();
+        let config = HostConfig {
+            host_name: "Host".into(),
+            bind: "127.0.0.1:0".parse().unwrap(),
+            region: Region {
+                x: 0,
+                y: 0,
+                width: 1920,
+                height: 1080,
+            },
+            pen_features: PenFeatures::default(),
+            video: false,
+        };
+        let (pen, pen_rx) = std::sync::mpsc::channel();
+        std::mem::forget(pen_rx);
+        let host = Host::new(identity.clone(), config, PairingStore::in_memory(), pen).unwrap();
+        let addr = host.local_addr().unwrap();
+        let offer = host.open_pairing().await.unwrap();
+        // Shown long ago.
+        host.pairing.lock().await.as_mut().unwrap().1 -=
+            PAIRING_VALID + std::time::Duration::from_secs(1);
+        tokio::spawn(host.run(|_| {}));
+        let endpoint = ib_transport::ClientEndpoint::new(Identity::generate().unwrap()).unwrap();
+        let conn = endpoint
+            .connect(addr, identity.fingerprint())
+            .await
+            .unwrap();
+        assert!(join(&conn, Some(offer.secret)).await.is_err());
     }
 
     #[test]

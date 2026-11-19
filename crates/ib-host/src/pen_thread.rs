@@ -258,6 +258,16 @@ impl PenThread {
 /// Injects one pen sample; returns where it landed (the pointer position).
 fn emit(sink: &mut Box<dyn PenSink>, s: PenSample, region: Region) -> DesktopPoint {
     let at = to_desktop(region, Rotation::None, s.x, s.y);
+    // For measuring pen quality: RUST_LOG=ib_host::pen_samples=trace
+    tracing::trace!(
+        target: "ib_host::pen_samples",
+        t_us = s.t_us,
+        x = at.x,
+        y = at.y,
+        p = s.pressure,
+        state = ?s.state,
+        "sample"
+    );
     if let Err(e) = sink.emit(&s, at) {
         tracing::warn!("{e}");
     }

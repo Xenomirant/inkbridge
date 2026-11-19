@@ -107,6 +107,10 @@ Still to do for M4:
   debugging; the app tries the loopback first, so it connects through the cable by itself, also on
   macOS. Checked by tests (QUIC black-holed, whole host sessions over TCP); on the tablet: see below.
 - **Choosing a display on Windows:** as on macOS (above).
+- **Checked on the tablet (Windows, adb over USB):** pairing and a session over the TCP fallback through
+  `adb reverse`; the pad shows "USB".
+- **Security:** a pairing code works for 5 minutes after it is shown (and once). The host's private
+  key file is owner-only on macOS/Linux (tightened on load for older installs).
 
 ## Open issues
 - Windows: root cause of occasional rejected pen events (a resync workaround exists, commit 945d526).
