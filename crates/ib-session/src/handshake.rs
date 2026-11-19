@@ -74,6 +74,9 @@ pub async fn host_handshake(
         reject(ctl, RejectReason::NotPaired).await?;
         return Err(SessionError::Rejected(RejectReason::NotPaired));
     }
+    if let Err(e) = store.mark_used(peer) {
+        tracing::warn!("could not save when the tablet was last used: {e}");
+    }
     if !hello.version.is_compatible_with(PROTOCOL_VERSION) {
         reject(ctl, RejectReason::IncompatibleVersion).await?;
         return Err(SessionError::Rejected(RejectReason::IncompatibleVersion));

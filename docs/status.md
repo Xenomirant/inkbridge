@@ -97,11 +97,14 @@ Still to do for M4:
   QUIC. Needs the TCP fallback first, then an opt-in adb mode. Wi-Fi only until then.
 - Permission onboarding UI, notarised bundle (M6), iPad client.
 
+## Done since the Mac work (Windows PC)
+- **Pairings expire on the host too:** `paired-devices.txt` records each tablet's last connection; a
+  tablet unused for 90 days is dropped and needs the QR code again (as the app forgets computers).
+  `--list-paired` lists them, `--forget N|all` unpairs.
+
 ## Open issues
 - Windows: root cause of occasional rejected pen events (a resync workaround exists, commit 945d526).
 - Possible brief flicker on the tablet after switching the View (zoom) mode.
-- The host never forgets a paired tablet (`paired-devices.txt` has no expiry). The tablet side expires
-  its list; the host side matters more, because a paired tablet can inject input.
 - Wi-Fi stalls: on the campus network the link pauses for 100-230 ms every 5-10 s and loses 14-40
   packets in a burst (host log, `RUST_LOG=info,ib_host::server=debug`, "video link" lines). The
   picture freezes for that long. QUIC used to buffer up to 10 MB of video unseen during a pause and

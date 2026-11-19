@@ -1,6 +1,7 @@
 //! `inkbridge-host`: command-line host for M1 (pen input, no video yet).
 //!
-//! Usage: `inkbridge-host [--port N] [--pair] [--display N] [--extend] [--fake-sink]`
+//! Usage: `inkbridge-host [--port N] [--pair] [--display N] [--extend] [--fake-sink]`,
+//! `--list-paired`, `--forget N|all`
 //! - `--pair`: open pairing even if tablets are already paired;
 //! - `--display N`: show and draw on display N of `--list-displays`;
 //! - `--extend`: macOS: the tablet is an extra screen, not a copy of one;
@@ -63,6 +64,13 @@ fn parse_args() -> anyhow::Result<Args> {
                 println!("{}", platform::describe_displays());
                 std::process::exit(0);
             }
+            "--list-paired" => std::process::exit(run_list_paired()),
+            "--forget" => {
+                let which = it.next().ok_or_else(|| {
+                    anyhow::anyhow!("--forget needs a number from --list-paired, or all")
+                })?;
+                std::process::exit(run_forget(&which));
+            }
             "--fake-sink" => args.fake_sink = true,
             "--fix-usb-routing" => std::process::exit(run_routing(true)),
             "--undo-usb-routing" => std::process::exit(run_routing(false)),
@@ -85,6 +93,8 @@ fn parse_args() -> anyhow::Result<Args> {
                      inkbridge-host --extend [--sharp]   macOS: use the tablet as an extra screen (also in the tablet's Screen menu);\n\
                                                          --sharp: pixel for pixel on the tablet, with thin bars\n\
                      inkbridge-host --list-displays      number the connected displays for --display\n\
+                     inkbridge-host --list-paired        list the paired tablets (forgotten after 90 days unused)\n\
+                     inkbridge-host --forget N|all       unpair tablet N of --list-paired, or every tablet\n\
                      inkbridge-host --fix-usb-routing    keep internet traffic off USB-tethered tablets (asks for admin once)\n\
                      inkbridge-host --undo-usb-routing   restore Windows' automatic routing for them\n\
                      inkbridge-host --setup-uinput       Linux: allow pen pressure via a virtual tablet (asks for admin once)\n\
@@ -97,6 +107,69 @@ fn parse_args() -> anyhow::Result<Args> {
         }
     }
     Ok(args)
+}
+
+fn paired_store() -> anyhow::Result<PairingStore> {
+    Ok(PairingStore::load(
+        &storage::config_dir().join("paired-devices.txt"),
+    )?)
+}
+
+/// `--list-paired`: the paired tablets, numbered for `--forget`.
+fn run_list_paired() -> i32 {
+    let store = match paired_store() {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("{e:#}");
+            return 1;
+        }
+    };
+    if store.devices().is_empty() {
+        println!("No paired tablets.");
+    }
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    for (i, d) in store.devices().iter().enumerate() {
+        let days = now.saturating_sub(d.last_used) / (24 * 60 * 60);
+        let when = match days {
+            0 => "today".to_owned(),
+            1 => "yesterday".to_owned(),
+            n => format!("{n} days ago"),
+        };
+        println!("{}: {} (last used {when})", i + 1, d.name);
+    }
+    0
+}
+
+/// `--forget N|all`: unpairs tablets; they need the QR code again.
+fn run_forget(which: &str) -> i32 {
+    let result = paired_store().and_then(|mut store| {
+        if which == "all" {
+            store.clear()?;
+            println!("Forgot every paired tablet.");
+            return Ok(());
+        }
+        let device = which
+            .parse::<usize>()
+            .ok()
+            .and_then(|n| n.checked_sub(1))
+            .and_then(|i| store.devices().get(i).cloned())
+            .ok_or_else(|| anyhow::anyhow!("no paired tablet {which}; see --list-paired"))?;
+        store.remove(device.fingerprint)?;
+        println!(
+            "Forgot {}. It needs the QR code to connect again.",
+            device.name
+        );
+        Ok(())
+    });
+    match result {
+        Ok(()) => 0,
+        Err(e) => {
+            eprintln!("{e:#}");
+            1
+        }
+    }
 }
 
 fn run_uinput(enable: bool) -> i32 {
