@@ -13,6 +13,7 @@
 mod caps;
 mod codec;
 mod control;
+mod keys;
 mod pen;
 mod version;
 mod video;
@@ -23,8 +24,9 @@ pub use control::{
     ClientHello, ControlMessage, DisplayInfo, HostHello, PAIRING_SECRET_LEN, Region, Reject,
     RejectReason, TouchContact, TouchPhase,
 };
+pub use keys::{Key, MAX_TEXT_LEN, Modifiers};
 pub use pen::{Buttons, PenBatch, PenSample, PenState, Tool};
-pub use version::{DISPLAY_CHOICE_MINOR, PROTOCOL_VERSION, ProtocolVersion};
+pub use version::{DISPLAY_CHOICE_MINOR, KEYBOARD_MINOR, PROTOCOL_VERSION, ProtocolVersion};
 
 /// Default UDP port: the host listens here (Wi-Fi), and a tablet listens here
 /// on its USB tethering link for the host to dial in. Below 32768, outside

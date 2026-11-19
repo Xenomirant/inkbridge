@@ -36,6 +36,15 @@ Encoding: [postcard](https://postcard.jamesmunns.com/) (compact, varint-based). 
 ## Versioning
 `PROTOCOL_VERSION` (currently 0.1). A bump of `minor` adds optional fields or messages that old peers can ignore through capability negotiation; a bump of `major` is breaking. Until 1.0, any minor bump may also be breaking.
 
+## Keyboard (0.3)
+A host that can type sends `Keyboard { available }` after the hello, only to clients of 0.3 or later
+(older ones stop reading at an unknown message). The client then shows its keyboard and sends
+`Text(String)` for committed text (at most 4096 bytes per message, any language; `\n` = Enter) and
+`Key { key, modifiers }` for keys without a character and shortcuts (`Char(c)` + Ctrl/Alt/Shift/Meta).
+The host injects them on the pen thread, so typing and pen strokes stay in order. Windows types text
+as Unicode characters (`KEYEVENTF_UNICODE`), independent of its keyboard layout. macOS and Linux
+hosts announce `available: false` until their backends implement it.
+
 ## TCP fallback (ADR-0009)
 Same port number as QUIC, TLS 1.3 with the same certificates, pinning and ALPN. A session is **three
 TCP connections**, all opened by the tablet, so pen samples never queue behind video inside one TCP

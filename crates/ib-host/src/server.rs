@@ -87,6 +87,8 @@ pub struct HostConfig {
     pub bind: SocketAddr,
     pub region: Region,
     pub pen_features: PenFeatures,
+    /// Whether the pen backend can type (keyboard from the tablet).
+    pub keyboard: bool,
     /// Whether screen streaming is available on this host.
     pub video: bool,
 }
@@ -373,7 +375,8 @@ impl Host {
             client_max: (hello.caps.max_width, hello.caps.max_height),
         };
         session.display_choice = hello.version.minor >= ib_protocol::DISPLAY_CHOICE_MINOR;
-        self.send_displays(&mut ctl, &session).await?;
+        self.announce(&mut ctl, &session, hello.version.minor)
+            .await?;
         let mut video_task = None;
         if settings.caps.negotiate_codec(&hello.caps).is_some() {
             let (tx, mut rx) = tokio::sync::mpsc::channel::<VideoChunk>(VIDEO_QUEUE);
@@ -457,6 +460,24 @@ impl Host {
             });
         }
         choices
+    }
+
+    /// Tells a new session what else this host offers: the keyboard and the
+    /// displays. Older apps stop reading at a message they don't know, so
+    /// each goes only to apps of the version that introduced it.
+    async fn announce(
+        &self,
+        ctl: &mut ib_transport::Control,
+        session: &SessionState,
+        minor: u16,
+    ) -> anyhow::Result<()> {
+        if minor >= ib_protocol::KEYBOARD_MINOR {
+            ctl.send(&ControlMessage::Keyboard {
+                available: self.config.keyboard,
+            })
+            .await?;
+        }
+        self.send_displays(ctl, session).await
     }
 
     /// Tells the tablet which displays it can choose from, if there is a
@@ -736,6 +757,14 @@ impl Host {
                         end,
                     });
                 }
+                ControlMessage::Text(text) if self.config.keyboard => {
+                    if text.len() <= ib_protocol::MAX_TEXT_LEN {
+                        let _ = self.pen.send(PenInput::Text(text));
+                    }
+                }
+                ControlMessage::Key { key, modifiers } if self.config.keyboard => {
+                    let _ = self.pen.send(PenInput::Key(key, modifiers));
+                }
                 ControlMessage::Viewport { width, height } => {
                     session.aspect = f64::from(width.max(1)) / f64::from(height.max(1));
                     session.viewport = (width, height);
@@ -845,6 +874,7 @@ mod tests {
                 height: 1080,
             },
             pen_features: PenFeatures::default(),
+            keyboard: false,
             video: false,
         };
         let (pen, pen_rx) = std::sync::mpsc::channel();
@@ -957,6 +987,7 @@ mod tests {
             bind: "127.0.0.1:0".parse().unwrap(),
             region: real[0].bounds,
             pen_features: PenFeatures::default(),
+            keyboard: false,
             video: true,
         };
         let (pen, pen_rx) = std::sync::mpsc::channel();
@@ -1092,6 +1123,7 @@ mod tests {
             bind: "127.0.0.1:0".parse().unwrap(),
             region: all[0].bounds,
             pen_features: PenFeatures::default(),
+            keyboard: false,
             video: true,
         };
         let (pen, pen_rx) = std::sync::mpsc::channel();
@@ -1220,6 +1252,81 @@ mod tests {
         }
     }
 
+    /// A host that can type tells the tablet so, and what the tablet types
+    /// reaches the pen thread (which injects it in order with the pen).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn typing_on_the_tablet_reaches_the_computer() {
+        let identity = Identity::generate().unwrap();
+        let config = HostConfig {
+            host_name: "Host".into(),
+            bind: "127.0.0.1:0".parse().unwrap(),
+            region: Region {
+                x: 0,
+                y: 0,
+                width: 1920,
+                height: 1080,
+            },
+            pen_features: PenFeatures::default(),
+            keyboard: true,
+            video: false,
+        };
+        let (pen, pen_rx) = std::sync::mpsc::channel();
+        let host = Host::new(identity.clone(), config, PairingStore::in_memory(), pen).unwrap();
+        let addr = host.local_addr().unwrap();
+        let offer = host.open_pairing().await.unwrap();
+        tokio::spawn(host.run(|_| {}));
+        let endpoint = ib_transport::ClientEndpoint::new(Identity::generate().unwrap()).unwrap();
+        let conn = endpoint
+            .connect(addr, identity.fingerprint())
+            .await
+            .unwrap();
+        let mut ctl = conn.open_control().await.unwrap();
+        let hello = ib_protocol::ClientHello {
+            version: ib_protocol::PROTOCOL_VERSION,
+            device_name: "Tablet".into(),
+            caps: Capabilities {
+                video_codecs: vec![],
+                max_width: 1920,
+                max_height: 1080,
+                max_fps: 60,
+                pen: PenFeatures::default(),
+            },
+            screen_width: 1920,
+            screen_height: 1200,
+        };
+        ib_session::client_handshake(&mut ctl, hello, Some((offer.secret.0, "Tablet".into())))
+            .await
+            .unwrap();
+        let available = wait_for(&mut ctl, |m| match m {
+            ControlMessage::Keyboard { available } => Some(available),
+            _ => None,
+        })
+        .await;
+        assert!(available);
+        ctl.send(&ControlMessage::Text("paint\n".into()))
+            .await
+            .unwrap();
+        ctl.send(&ControlMessage::Key {
+            key: ib_protocol::Key::Meta,
+            modifiers: ib_protocol::Modifiers::NONE,
+        })
+        .await
+        .unwrap();
+        let (mut text, mut key) = (None, None);
+        while text.is_none() || key.is_none() {
+            match pen_rx
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap()
+            {
+                PenInput::Text(t) => text = Some(t),
+                PenInput::Key(k, _) => key = Some(k),
+                _ => {}
+            }
+        }
+        assert_eq!(text.as_deref(), Some("paint\n"));
+        assert_eq!(key, Some(ib_protocol::Key::Meta));
+    }
+
     /// A code that has been on the screen too long no longer pairs.
     #[tokio::test(flavor = "multi_thread")]
     async fn an_expired_pairing_code_is_refused() {
@@ -1234,6 +1341,7 @@ mod tests {
                 height: 1080,
             },
             pen_features: PenFeatures::default(),
+            keyboard: false,
             video: false,
         };
         let (pen, pen_rx) = std::sync::mpsc::channel();

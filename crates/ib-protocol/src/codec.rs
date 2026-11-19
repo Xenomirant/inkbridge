@@ -124,6 +124,25 @@ mod tests {
         }
     }
 
+    #[test]
+    fn keyboard_messages_round_trip() {
+        for msg in [
+            ControlMessage::Keyboard { available: true },
+            ControlMessage::Text("Привет, 你好 ✍".into()),
+            ControlMessage::Key {
+                key: crate::Key::Char('z'),
+                modifiers: crate::Modifiers::CTRL.with(crate::Modifiers::SHIFT),
+            },
+            ControlMessage::Key {
+                key: crate::Key::Function(5),
+                modifiers: crate::Modifiers::NONE,
+            },
+        ] {
+            let bytes = encode(&msg).unwrap();
+            assert_eq!(decode::<ControlMessage>(&bytes).unwrap(), msg);
+        }
+    }
+
     /// A full batch must fit in a single QUIC datagram (conservative 1200 B).
     #[test]
     fn full_pen_batch_fits_in_a_datagram() {

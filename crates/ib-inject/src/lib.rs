@@ -17,6 +17,8 @@ mod portal;
 mod tracker;
 #[cfg(windows)]
 mod windows;
+#[cfg(windows)]
+mod windows_keys;
 
 #[cfg(target_os = "linux")]
 pub use linux::UinputPenSink;
@@ -29,7 +31,7 @@ pub use tracker::{PenTracker, Step};
 pub use windows::WindowsPenSink;
 
 use ib_geometry::DesktopPoint;
-use ib_protocol::{PenFeatures, PenSample, TouchPhase};
+use ib_protocol::{Key, Modifiers, PenFeatures, PenSample, TouchPhase};
 
 /// One finger of a touch frame, already mapped to desktop coordinates.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -113,6 +115,26 @@ pub trait PenSink: Send {
     /// ignore this.
     fn set_display(&mut self, _id: u64, _bounds: ib_geometry::Region) {}
 
+    /// Whether [`type_text`](Self::type_text) and [`key`](Self::key) work.
+    fn keyboard(&self) -> bool {
+        false
+    }
+
+    /// Types `text` into the focused window, as characters (independent of
+    /// the computer's keyboard layout). `\n` presses Enter.
+    fn type_text(&mut self, _text: &str) -> Result<(), InjectError> {
+        Err(InjectError::Unavailable(
+            "typing not supported by this backend".into(),
+        ))
+    }
+
+    /// Presses and releases `key` while holding `modifiers`.
+    fn key(&mut self, _key: Key, _modifiers: Modifiers) -> Result<(), InjectError> {
+        Err(InjectError::Unavailable(
+            "keys not supported by this backend".into(),
+        ))
+    }
+
     /// Moves the mouse pointer (so scrolling targets the window under the
     /// fingers).
     fn move_pointer(&mut self, _at: DesktopPoint) -> Result<(), InjectError> {
@@ -131,6 +153,8 @@ pub struct FakePenSink {
     pub touch_frames: Vec<Vec<TouchPoint>>,
     pub scrolls: Vec<(f64, f64)>,
     pub pointer_moves: Vec<DesktopPoint>,
+    pub typed: Vec<String>,
+    pub keys: Vec<(Key, Modifiers)>,
     pub releases: usize,
 }
 
@@ -167,6 +191,20 @@ impl PenSink for FakePenSink {
 
     fn move_pointer(&mut self, at: DesktopPoint) -> Result<(), InjectError> {
         self.pointer_moves.push(at);
+        Ok(())
+    }
+
+    fn keyboard(&self) -> bool {
+        true
+    }
+
+    fn type_text(&mut self, text: &str) -> Result<(), InjectError> {
+        self.typed.push(text.to_owned());
+        Ok(())
+    }
+
+    fn key(&mut self, key: Key, modifiers: Modifiers) -> Result<(), InjectError> {
+        self.keys.push((key, modifiers));
         Ok(())
     }
 

@@ -288,15 +288,16 @@ async fn main() -> anyhow::Result<()> {
         Box::new(move || platform::pen_sink(region))
     };
     // Advertise what the backend actually delivers (probe it once).
-    let features = if args.fake_sink {
-        FakePenSink::default().features()
+    let (features, keyboard) = if args.fake_sink {
+        let fake = FakePenSink::default();
+        (fake.features(), fake.keyboard())
     } else {
         platform::pen_sink(region).map_or_else(
             |e| {
                 tracing::warn!("{e}");
-                ib_protocol::PenFeatures::default()
+                (ib_protocol::PenFeatures::default(), false)
             },
-            |s| s.features(),
+            |s| (s.features(), s.keyboard()),
         )
     };
     let (pen_tx, pen_handle) = pen_thread::spawn(make_sink, region)?;
@@ -309,6 +310,7 @@ async fn main() -> anyhow::Result<()> {
         bind,
         region,
         pen_features: features,
+        keyboard,
         video: platform::video_supported(),
     };
     let host = Host::new(identity, config, store, pen_tx.clone())?;
@@ -363,5 +365,20 @@ impl PenSink for LoggingSink {
     fn release(&mut self) -> Result<(), ib_inject::InjectError> {
         tracing::info!("pen released");
         self.0.release()
+    }
+    fn keyboard(&self) -> bool {
+        true
+    }
+    fn type_text(&mut self, text: &str) -> Result<(), ib_inject::InjectError> {
+        tracing::info!(text, "typed");
+        self.0.type_text(text)
+    }
+    fn key(
+        &mut self,
+        key: ib_protocol::Key,
+        modifiers: ib_protocol::Modifiers,
+    ) -> Result<(), ib_inject::InjectError> {
+        tracing::info!(?key, ?modifiers, "key");
+        self.0.key(key, modifiers)
     }
 }

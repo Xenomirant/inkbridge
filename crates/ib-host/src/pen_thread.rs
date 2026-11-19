@@ -40,6 +40,10 @@ pub enum PenInput {
         t_us: u64,
         end: bool,
     },
+    /// Text typed on the tablet's keyboard.
+    Text(String),
+    /// A key or shortcut from the tablet.
+    Key(ib_protocol::Key, ib_protocol::Modifiers),
     /// The tablet disconnected: release the pen and reset sequence state.
     Disconnected,
     Shutdown,
@@ -166,6 +170,16 @@ impl PenThread {
                 t_us,
                 end,
             } => self.on_scroll(x, y, dx, dy, t_us, end),
+            PenInput::Text(text) => {
+                if let Err(e) = self.sink.type_text(&text) {
+                    tracing::warn!("{e}");
+                }
+            }
+            PenInput::Key(key, modifiers) => {
+                if let Err(e) = self.sink.key(key, modifiers) {
+                    tracing::warn!("{e}");
+                }
+            }
             PenInput::Disconnected => {
                 self.cancel_gestures();
                 if self.stream.release().is_some()

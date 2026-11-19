@@ -33,6 +33,7 @@ pub fn load_or_create_identity(dir: &Path) -> anyhow::Result<Identity> {
 
 /// Makes `path` readable by its owner only. Windows: the config directory
 /// is in the user's own profile, which other users can't read.
+#[cfg_attr(not(unix), allow(clippy::unnecessary_wraps))]
 fn private(path: &Path) -> std::io::Result<()> {
     #[cfg(unix)]
     {

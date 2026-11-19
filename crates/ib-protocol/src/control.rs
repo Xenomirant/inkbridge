@@ -168,4 +168,19 @@ pub enum ControlMessage {
     SelectDisplay {
         index: u8,
     },
+    /// Host → client (protocol 0.3+): whether the host can type for the
+    /// tablet. Sent after the session starts; without it the client shows
+    /// no keyboard. Only sent to clients of 0.3 or later.
+    Keyboard {
+        available: bool,
+    },
+    /// Client → host (protocol 0.3+, only if the host said `Keyboard`):
+    /// type this text, at most [`crate::MAX_TEXT_LEN`] bytes.
+    Text(String),
+    /// Client → host (protocol 0.3+): press and release `key` while
+    /// holding `modifiers`.
+    Key {
+        key: crate::Key,
+        modifiers: crate::Modifiers,
+    },
 }

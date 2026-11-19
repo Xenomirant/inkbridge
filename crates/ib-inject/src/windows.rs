@@ -370,6 +370,24 @@ impl PenSink for WindowsPenSink {
         self.origin = monitor_origin(id).map_or((0.0, 0.0), |(x, y)| (f64::from(x), f64::from(y)));
     }
 
+    fn keyboard(&self) -> bool {
+        true
+    }
+
+    fn type_text(&mut self, text: &str) -> Result<(), InjectError> {
+        send_inputs(&crate::windows_keys::text_inputs(text))
+    }
+
+    fn key(
+        &mut self,
+        key: ib_protocol::Key,
+        modifiers: ib_protocol::Modifiers,
+    ) -> Result<(), InjectError> {
+        let inputs = crate::windows_keys::key_inputs(key, modifiers)
+            .ok_or_else(|| crate::windows_keys::unknown_key(key))?;
+        send_inputs(&inputs)
+    }
+
     fn move_pointer(&mut self, at: DesktopPoint) -> Result<(), InjectError> {
         let at = DesktopPoint {
             x: at.x + self.origin.0,

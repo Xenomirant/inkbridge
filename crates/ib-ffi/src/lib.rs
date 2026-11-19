@@ -353,6 +353,8 @@ pub struct Session {
     region: Arc<Mutex<ib_protocol::Region>>,
     /// Displays to choose from; empty if the computer offers no choice.
     displays: Arc<Mutex<DisplayChoice>>,
+    /// Whether the computer types what the tablet sends (protocol 0.3).
+    keyboard: Arc<AtomicBool>,
     /// Incoming encoded video, if the session streams the screen.
     video: Option<Mutex<mpsc::Receiver<VideoChunk>>>,
     telemetry: Arc<Mutex<Telemetry>>,
@@ -502,6 +504,50 @@ impl Session {
             u8::try_from(index).map_err(|_| InkbridgeError::Transport("no such display".into()))?;
         self.control_tx
             .send(ControlMessage::SelectDisplay { index })
+            .map_err(|_| InkbridgeError::Transport("session closed".into()))
+    }
+
+    /// Whether the computer can type for the tablet (show a keyboard).
+    pub fn keyboard_available(&self) -> bool {
+        self.keyboard.load(Ordering::Acquire)
+    }
+
+    /// Types `text` on the computer (the tablet keyboard's committed text).
+    /// Never blocks; ignored if the computer can't type.
+    pub fn type_text(&self, text: String) -> Result<(), InkbridgeError> {
+        if !self.keyboard_available() {
+            return Ok(());
+        }
+        for chunk in text_chunks(&text, ib_protocol::MAX_TEXT_LEN) {
+            self.control_tx
+                .send(ControlMessage::Text(chunk.to_owned()))
+                .map_err(|_| InkbridgeError::Transport("session closed".into()))?;
+        }
+        Ok(())
+    }
+
+    /// Presses a key or shortcut on the computer. Never blocks; ignored if
+    /// the computer can't type.
+    pub fn press_key(&self, key: TabletKey, modifiers: KeyModifiers) -> Result<(), InkbridgeError> {
+        if !self.keyboard_available() {
+            return Ok(());
+        }
+        let Some(key) = key.to_protocol() else {
+            return Ok(());
+        };
+        let mut m = ib_protocol::Modifiers::NONE;
+        for (on, bit) in [
+            (modifiers.shift, ib_protocol::Modifiers::SHIFT),
+            (modifiers.ctrl, ib_protocol::Modifiers::CTRL),
+            (modifiers.alt, ib_protocol::Modifiers::ALT),
+            (modifiers.meta, ib_protocol::Modifiers::META),
+        ] {
+            if on {
+                m = m.with(bit);
+            }
+        }
+        self.control_tx
+            .send(ControlMessage::Key { key, modifiers: m })
             .map_err(|_| InkbridgeError::Transport("session closed".into()))
     }
 
@@ -779,10 +825,96 @@ impl Session {
             host,
             region: tasks.region,
             displays: tasks.displays,
+            keyboard: tasks.keyboard,
             video,
             telemetry: tasks.telemetry,
         }))
     }
+}
+
+/// A key on the tablet's extra-keys row or from its keyboard.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Enum)]
+pub enum TabletKey {
+    Enter,
+    Backspace,
+    Delete,
+    Tab,
+    Escape,
+    Up,
+    Down,
+    Left,
+    Right,
+    Home,
+    End,
+    PageUp,
+    PageDown,
+    /// The Windows key / macOS Command on its own.
+    Meta,
+    /// F1..=F12.
+    Function {
+        number: u8,
+    },
+    /// One character, for shortcuts such as Ctrl+Z.
+    Char {
+        value: String,
+    },
+}
+
+impl TabletKey {
+    fn to_protocol(&self) -> Option<ib_protocol::Key> {
+        use ib_protocol::Key;
+        Some(match self {
+            Self::Enter => Key::Enter,
+            Self::Backspace => Key::Backspace,
+            Self::Delete => Key::Delete,
+            Self::Tab => Key::Tab,
+            Self::Escape => Key::Escape,
+            Self::Up => Key::Up,
+            Self::Down => Key::Down,
+            Self::Left => Key::Left,
+            Self::Right => Key::Right,
+            Self::Home => Key::Home,
+            Self::End => Key::End,
+            Self::PageUp => Key::PageUp,
+            Self::PageDown => Key::PageDown,
+            Self::Meta => Key::Meta,
+            Self::Function { number } => Key::Function(*number),
+            Self::Char { value } => {
+                let mut chars = value.chars();
+                let c = chars.next()?;
+                if chars.next().is_some() {
+                    return None;
+                }
+                Key::Char(c.to_lowercase().next().unwrap_or(c))
+            }
+        })
+    }
+}
+
+/// Keys held during a [`TabletKey`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, uniffi::Record)]
+pub struct KeyModifiers {
+    pub shift: bool,
+    pub ctrl: bool,
+    pub alt: bool,
+    pub meta: bool,
+}
+
+/// Splits `text` into pieces of at most `max` bytes, on character
+/// boundaries.
+fn text_chunks(text: &str, max: usize) -> Vec<&str> {
+    let mut out = Vec::new();
+    let mut rest = text;
+    while !rest.is_empty() {
+        let mut end = rest.len().min(max);
+        while !rest.is_char_boundary(end) {
+            end -= 1;
+        }
+        let (head, tail) = rest.split_at(end);
+        out.push(head);
+        rest = tail;
+    }
+    out
 }
 
 /// Background tasks of a session and the handles the app-facing side keeps.
@@ -791,6 +923,7 @@ struct SessionTasks {
     closed: Arc<AtomicBool>,
     region: Arc<Mutex<ib_protocol::Region>>,
     displays: Arc<Mutex<DisplayChoice>>,
+    keyboard: Arc<AtomicBool>,
     telemetry: Arc<Mutex<Telemetry>>,
 }
 
@@ -825,9 +958,14 @@ fn spawn_session_tasks(
     let telemetry_reader = telemetry.clone();
     let displays = Arc::new(Mutex::new(DisplayChoice::default()));
     let displays_reader = displays.clone();
+    let keyboard = Arc::new(AtomicBool::new(false));
+    let keyboard_reader = keyboard.clone();
     runtime.spawn(async move {
         while let Ok(msg) = receiver.recv().await {
             match msg {
+                ControlMessage::Keyboard { available } => {
+                    keyboard_reader.store(available, Ordering::Release);
+                }
                 ControlMessage::Displays { displays, current } => {
                     if let Ok(mut g) = displays_reader.lock() {
                         *g = DisplayChoice {
@@ -890,6 +1028,7 @@ fn spawn_session_tasks(
         closed,
         region,
         displays,
+        keyboard,
         telemetry,
     }
 }
@@ -927,6 +1066,23 @@ fn spawn_video_receiver(
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn long_text_is_split_on_character_boundaries() {
+        let text = "ж".repeat(5); // 2 bytes each
+        let parts = text_chunks(&text, 3);
+        assert_eq!(parts, ["ж", "ж", "ж", "ж", "ж"]);
+        assert_eq!(text_chunks("", 3), Vec::<&str>::new());
+        assert_eq!(text_chunks("abcd", 3), ["abc", "d"]);
+    }
+
+    #[test]
+    fn shortcut_characters_are_single_and_lowercase() {
+        let key = |v: &str| TabletKey::Char { value: v.into() }.to_protocol();
+        assert_eq!(key("Z"), Some(ib_protocol::Key::Char('z')));
+        assert_eq!(key("ab"), None);
+        assert_eq!(key(""), None);
+    }
     use super::*;
 
     #[test]

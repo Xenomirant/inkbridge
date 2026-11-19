@@ -40,6 +40,11 @@ class PadActivity : ComponentActivity() {
             .createWifiLock(WifiManager.WIFI_MODE_FULL_LOW_LATENCY, "inkbridge:pad")
             .apply { setReferenceCounted(false) }
     }
+    /** Types on the computer; its button shows when the computer can type. */
+    private lateinit var keyboard: KeyboardBridge
+    private var keysChip: TextView? = null
+    private var extraKeys: android.view.View? = null
+
     /** Opens the display menu; shown only when the computer has several. */
     private var screens: TextView? = null
 
@@ -81,6 +86,7 @@ class PadActivity : ComponentActivity() {
             }
             val host = s.host()
             screens?.visibility = if (s.displays().size > 1) android.view.View.VISIBLE else android.view.View.GONE
+            keysChip?.visibility = if (s.keyboardAvailable()) android.view.View.VISIBLE else android.view.View.GONE
             pad.onHostRegion(host.regionX, host.regionY, host.regionWidth, host.regionHeight)
             val link = if (host.usb) "USB" else "Wi-Fi"
             val full = if (s.hasVideo()) {
@@ -130,7 +136,20 @@ class PadActivity : ComponentActivity() {
             visibility = android.view.View.GONE
         }
         screens = choose
-        val tools = if (screen != null) Ui.glassBar(this, clear, view, fit, choose) else Ui.glassBar(this, clear)
+        keyboard = KeyboardBridge(this) { SessionHolder.session }
+        val keys = keyboard.extraKeys(this).apply { visibility = android.view.View.GONE }
+        extraKeys = keys
+        val typing = Ui.chip(this, "Keys") { chip ->
+            if (keyboard.shown) keyboard.hide() else keyboard.show()
+            Ui.setChecked(chip, keyboard.shown)
+            keys.visibility = if (keyboard.shown) android.view.View.VISIBLE else android.view.View.GONE
+        }.apply { visibility = android.view.View.GONE }
+        keysChip = typing
+        val tools = if (screen != null) {
+            Ui.glassBar(this, clear, view, fit, choose, typing)
+        } else {
+            Ui.glassBar(this, clear, typing)
+        }
         val status = Ui.glassBar(this, info)
         controls = listOf(tools, status)
         status.setOnClickListener { detailed = !detailed }
@@ -141,6 +160,11 @@ class PadActivity : ComponentActivity() {
             screen?.let { addView(it, FrameLayout.LayoutParams(0, 0)) }
             ink?.let { addView(it.view) }
             addView(pad)
+            addView(keyboard, FrameLayout.LayoutParams(1, 1))
+            addView(keys, FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT,
+                Gravity.TOP or Gravity.CENTER_HORIZONTAL,
+            ).apply { setMargins(margin, margin * 6, margin, margin) })
             addView(tools, FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.START,
             ).apply { setMargins(margin, margin, margin, margin) })
@@ -157,6 +181,14 @@ class PadActivity : ComponentActivity() {
                 finish()
             }
         })
+    }
+
+    /** A hardware keyboard types on the computer too. */
+    override fun onKeyDown(keyCode: Int, event: android.view.KeyEvent): Boolean {
+        if (keyCode == android.view.KeyEvent.KEYCODE_BACK) return super.onKeyDown(keyCode, event)
+        val s = SessionHolder.session
+        if (s != null && s.keyboardAvailable() && keyboard.onKey(event)) return true
+        return super.onKeyDown(keyCode, event)
     }
 
     /** The computer's screen, decoded under the transparent pen layer. */

@@ -109,6 +109,11 @@ Still to do for M4:
 - **Choosing a display on Windows:** as on macOS (above).
 - **Checked on the tablet (Windows, adb over USB):** pairing and a session over the TCP fallback through
   `adb reverse`; the pad shows "USB".
+- **Keyboard from the tablet (protocol 0.3, Windows host):** a "Keys" button on the pad opens
+  Android's keyboard (any language) and a row of extra keys: Esc, Tab, Win (tap: Start; hold: keep
+  it pressed for Win+key), Ctrl/Alt/Shift (stay pressed for the next key), arrows, Del, Enter. A
+  hardware keyboard on the tablet works too. macOS (CGEvent) and Linux (uinput/portal) still say "no
+  keyboard": to do.
 - **Security:** a pairing code works for 5 minutes after it is shown (and once). The host's private
   key file is owner-only on macOS/Linux (tightened on load for older installs).
 
