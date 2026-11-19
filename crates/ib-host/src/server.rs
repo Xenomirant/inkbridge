@@ -195,7 +195,14 @@ impl Host {
                 }
             };
             let _slot = self.session.lock().await;
-            let session = self.run_session(&conn, TransportKind::Wifi, on_paired);
+            // A tablet on this computer's own loopback came through
+            // `adb reverse`: a USB cable.
+            let kind = if conn.is_tcp() && conn.remote_addr().ip().is_loopback() {
+                TransportKind::Usb
+            } else {
+                TransportKind::Wifi
+            };
+            let session = self.run_session(&conn, kind, on_paired);
             tokio::pin!(session);
             loop {
                 let incoming = tokio::select! {
@@ -279,7 +286,8 @@ impl Host {
         transport: TransportKind,
         on_paired: &(impl Fn(&str) + Send + Sync),
     ) {
-        tracing::info!(peer = %conn.remote_addr(), ?transport, "tablet connected");
+        let protocol = if conn.is_tcp() { "TCP" } else { "QUIC" };
+        tracing::info!(peer = %conn.remote_addr(), ?transport, protocol, "tablet connected");
         match self.serve(conn, transport).await {
             Ok(Some(name)) => on_paired(&name),
             Ok(None) => {}
@@ -1176,6 +1184,24 @@ mod tests {
             .await
             .unwrap();
         join(&conn, None).await.unwrap();
+    }
+
+    /// Where UDP is blocked, or over `adb reverse`, the whole session runs
+    /// on the TCP fallback: pairing, then a reconnect without the secret.
+    /// A tablet on the loopback came through adb, so it is told "USB".
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_tablet_pairs_and_reconnects_over_tcp() {
+        let (identity, addr, offer) = host().await;
+        let endpoint = ib_transport::ClientEndpoint::new(Identity::generate().unwrap()).unwrap();
+        for secret in [Some(offer.secret), None] {
+            let conn = endpoint
+                .connect_tcp(addr, identity.fingerprint())
+                .await
+                .unwrap();
+            let hello = join(&conn, secret).await.unwrap();
+            assert_eq!(hello.transport, ib_protocol::TransportKind::Usb);
+            conn.close("done");
+        }
     }
 
     #[test]

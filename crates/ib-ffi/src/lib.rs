@@ -386,10 +386,25 @@ impl Session {
             let endpoint = ClientEndpoint::new(identity)
                 .map_err(|e| InkbridgeError::Transport(e.to_string()))?;
             let mut last_error = String::from("no addresses in pairing code");
+            // A USB cable with `adb reverse` (the host's --adb option) brings
+            // the computer to this tablet's own loopback, over TCP only.
+            // Nothing listening there is refused at once.
+            if let Some(port) = offer.addrs.first().map(std::net::SocketAddr::port) {
+                let adb = std::net::SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, port));
+                if let Ok(Ok(c)) = tokio::time::timeout(
+                    Duration::from_secs(2),
+                    endpoint.connect_tcp(adb, offer.fingerprint),
+                )
+                .await
+                {
+                    return Ok((KeepAlive::Client(endpoint), c));
+                }
+            }
             for addr in &offer.addrs {
+                // QUIC, or TCP where UDP doesn't get through.
                 match tokio::time::timeout(
                     Duration::from_secs(3),
-                    endpoint.connect(*addr, offer.fingerprint),
+                    endpoint.connect_any(*addr, offer.fingerprint),
                 )
                 .await
                 {

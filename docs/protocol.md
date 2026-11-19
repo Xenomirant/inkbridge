@@ -3,7 +3,7 @@
 Source of truth: the `ib-protocol` crate. This document explains it; if they disagree, the code wins and this file gets fixed.
 
 ## Connection
-One QUIC connection (TLS 1.3, certificates pinned at pairing) per session, on a single UDP port. A TCP+TLS fallback carries the same messages over length-prefixed streams when UDP is blocked; pen datagrams then travel on a dedicated stream.
+One QUIC connection (TLS 1.3, certificates pinned at pairing) per session, on a single UDP port. A TCP+TLS fallback carries the same messages when UDP is blocked or only TCP is carried (`adb reverse`): see below and ADR-0009.
 
 | Channel | QUIC primitive | Payload | Reliability |
 |---|---|---|---|
@@ -35,3 +35,24 @@ Encoding: [postcard](https://postcard.jamesmunns.com/) (compact, varint-based). 
 
 ## Versioning
 `PROTOCOL_VERSION` (currently 0.1). A bump of `minor` adds optional fields or messages that old peers can ignore through capability negotiation; a bump of `major` is breaking. Until 1.0, any minor bump may also be breaking.
+
+## TCP fallback (ADR-0009)
+Same port number as QUIC, TLS 1.3 with the same certificates, pinning and ALPN. A session is **three
+TCP connections**, all opened by the tablet, so pen samples never queue behind video inside one TCP
+stream:
+
+| Preamble channel byte | Carries |
+|---|---|
+| `0` control | the control stream, framed as over QUIC |
+| `1` video | host → tablet `VideoChunk`s, framed as over QUIC; the host's socket send buffer is 128 KB |
+| `2` pen | frames `[kind u8][len u32 BE][body]`: `0` = `PenBatch`, `1` = ping (8-byte sender time), `2` = pong (echo) |
+
+Each connection starts, after the TLS handshake, with a 17-byte preamble: the channel byte and a
+16-byte random session token chosen by the tablet. The host groups the three connections by
+(client certificate fingerprint, token); a group that isn't complete within 5 s is dropped. Both
+sides ping on the pen connection every second; the round trip comes from the pongs, and 5 s of
+silence ends the session (QUIC's idle timeout). Unknown pen frame kinds are skipped.
+
+The tablet tries `127.0.0.1` over TCP first (a computer reached through `adb reverse`; nothing
+listening there fails at once), then each address from the QR code with QUIC, adding TCP if QUIC
+hasn't connected within 500 ms. The host reports a tablet on its loopback as `TransportKind::Usb`.

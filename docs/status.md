@@ -93,14 +93,20 @@ Building the Android app on the Mac: JDK 17, Android command-line tools, NDK and
 
 Still to do for M4:
 - `docs/latency.md` rows for macOS (software and VideoToolbox, Wi-Fi).
-- **USB on macOS:** the TB331FC tethers RNDIS-only, which macOS doesn't support, and adb can't carry
-  QUIC. Needs the TCP fallback first, then an opt-in adb mode. Wi-Fi only until then.
+- **USB on macOS:** the TB331FC tethers RNDIS-only, which macOS doesn't support. Now possible with
+  `--adb` over the TCP fallback (see below); not yet tried on the Mac.
 - Permission onboarding UI, notarised bundle (M6), iPad client.
 
 ## Done since the Mac work (Windows PC)
 - **Pairings expire on the host too:** `paired-devices.txt` records each tablet's last connection; a
   tablet unused for 90 days is dropped and needs the QR code again (as the app forgets computers).
   `--list-paired` lists them, `--forget N|all` unpairs.
+- **TCP fallback (ADR-0009):** where UDP is blocked or only TCP is carried, a session runs over three
+  TLS/TCP connections (control, video, pen) on the same port. The tablet tries QUIC first and adds
+  TCP after 500 ms. `--adb` (Advanced) keeps `adb reverse` set up for tablets on a USB cable with USB
+  debugging; the app tries the loopback first, so it connects through the cable by itself, also on
+  macOS. Checked by tests (QUIC black-holed, whole host sessions over TCP); on the tablet: see below.
+- **Choosing a display on Windows:** as on macOS (above).
 
 ## Open issues
 - Windows: root cause of occasional rejected pen events (a resync workaround exists, commit 945d526).

@@ -4,6 +4,7 @@
 //! The pen path runs on its own high-priority OS thread ([`pen_thread`]), fed
 //! through a channel, so async scheduling never delays injection.
 
+pub mod adb;
 pub mod clock;
 pub mod pairing_page;
 pub mod pen_thread;

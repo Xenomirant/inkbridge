@@ -1,7 +1,7 @@
 //! `inkbridge-host`: command-line host for M1 (pen input, no video yet).
 //!
 //! Usage: `inkbridge-host [--port N] [--pair] [--display N] [--extend] [--fake-sink]`,
-//! `--list-paired`, `--forget N|all`
+//! `--list-paired`, `--forget N|all`, `--adb` (USB through adb reverse)
 //! - `--pair`: open pairing even if tablets are already paired;
 //! - `--display N`: show and draw on display N of `--list-displays`;
 //! - `--extend`: macOS: the tablet is an extra screen, not a copy of one;
@@ -26,6 +26,9 @@ struct Args {
     fake_sink: bool,
     /// Display to show, numbered from 1 as `--list-displays` prints them.
     display: Option<usize>,
+    /// Advanced: keep `adb reverse` set up so a tablet on a USB cable
+    /// connects through it.
+    adb: bool,
 }
 
 fn parse_args() -> anyhow::Result<Args> {
@@ -34,6 +37,7 @@ fn parse_args() -> anyhow::Result<Args> {
         force_pairing: false,
         fake_sink: false,
         display: None,
+        adb: false,
     };
     let mut it = std::env::args().skip(1);
     while let Some(a) = it.next() {
@@ -45,6 +49,7 @@ fn parse_args() -> anyhow::Result<Args> {
                     .parse()?;
             }
             "--pair" => args.force_pairing = true,
+            "--adb" => args.adb = true,
             "--display" => {
                 args.display = Some(
                     it.next()
@@ -93,6 +98,7 @@ fn parse_args() -> anyhow::Result<Args> {
                      inkbridge-host --extend [--sharp]   macOS: use the tablet as an extra screen (also in the tablet's Screen menu);\n\
                                                          --sharp: pixel for pixel on the tablet, with thin bars\n\
                      inkbridge-host --list-displays      number the connected displays for --display\n\
+                     inkbridge-host --adb                USB without tethering (macOS, or tethering off): needs adb and USB debugging\n\
                      inkbridge-host --list-paired        list the paired tablets (forgotten after 90 days unused)\n\
                      inkbridge-host --forget N|all       unpair tablet N of --list-paired, or every tablet\n\
                      inkbridge-host --fix-usb-routing    keep internet traffic off USB-tethered tablets (asks for admin once)\n\
@@ -304,6 +310,16 @@ async fn main() -> anyhow::Result<()> {
     };
     let host = Host::new(identity, config, store, pen_tx.clone())?;
     tracing::info!(addr = %host.local_addr()?, ?region, config = %dir.display(), "host listening");
+    if args.adb {
+        let adb = ib_host::adb::find_adb().ok_or_else(|| {
+            anyhow::anyhow!(
+                "--adb: adb not found. Install Android's platform tools and put adb on the PATH \
+                 (or set ANDROID_HOME)."
+            )
+        })?;
+        tracing::info!(adb = %adb.display(), "--adb: tablets on a USB cable with USB debugging connect through it");
+        ib_host::adb::keep_reversed(adb, host.local_addr()?.port());
+    }
 
     if args.force_pairing || host.paired_count().await == 0 {
         show_offer(&host.open_pairing().await?, &dir, &host_label);

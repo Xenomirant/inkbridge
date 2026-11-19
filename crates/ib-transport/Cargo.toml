@@ -13,7 +13,7 @@ publish.workspace = true
 ib-protocol.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
-tokio.workspace = true
+tokio = { workspace = true, features = ["macros"] }
 bytes.workspace = true
 quinn.workspace = true
 rustls.workspace = true
@@ -21,6 +21,7 @@ rcgen.workspace = true
 ring.workspace = true
 subtle.workspace = true
 socket2.workspace = true
+tokio-rustls.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

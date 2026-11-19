@@ -10,6 +10,7 @@
 use ib_protocol::{ControlMessage, MAX_MESSAGE_LEN, decode, encode};
 
 use crate::TransportError;
+use crate::stream::{RecvHalf, SendHalf};
 
 /// The bidirectional control stream of a session.
 #[derive(Debug)]
@@ -21,17 +22,17 @@ pub struct Control {
 /// Sending half of the control stream.
 #[derive(Debug)]
 pub struct ControlSender {
-    send: quinn::SendStream,
+    send: SendHalf,
 }
 
 /// Receiving half of the control stream.
 #[derive(Debug)]
 pub struct ControlReceiver {
-    recv: quinn::RecvStream,
+    recv: RecvHalf,
 }
 
 impl Control {
-    pub(crate) fn new(send: quinn::SendStream, recv: quinn::RecvStream) -> Self {
+    pub(crate) fn new(send: SendHalf, recv: RecvHalf) -> Self {
         Self {
             tx: ControlSender { send },
             rx: ControlReceiver { recv },
@@ -79,8 +80,7 @@ impl ControlSender {
     /// everything (or gone away). Call before closing a connection right
     /// after a final message, such as a rejection, so it isn't lost.
     pub async fn close_send(&mut self) {
-        let _ = self.send.finish();
-        let _ = self.send.stopped().await;
+        self.send.finish().await;
     }
 }
 

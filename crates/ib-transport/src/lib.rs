@@ -4,7 +4,8 @@
 //!   identified by its SHA-256 [`Fingerprint`], not by any CA.
 //! - [`PairingOffer`]: what the host's QR code encodes (addresses, host
 //!   fingerprint, one-time secret).
-//! - [`HostEndpoint`] / [`ClientEndpoint`]: QUIC endpoints. The client pins
+//! - [`HostEndpoint`] / [`ClientEndpoint`]: QUIC endpoints, with TLS over TCP
+//!   as the fallback where UDP is blocked or only TCP is carried (adb). The client pins
 //!   the host fingerprint from the QR code; the host requires a client
 //!   certificate and exposes its fingerprint so the session layer can check it
 //!   against the paired-device list.
@@ -18,6 +19,8 @@ mod endpoint;
 mod framing;
 mod identity;
 mod pairing;
+mod stream;
+mod tcp;
 mod tls;
 mod video;
 
@@ -56,4 +59,10 @@ pub enum TransportError {
     NoPeerCertificate,
     #[error("message length {0} exceeds limit")]
     TooLong(usize),
+    #[error("connection closed")]
+    Closed,
+    #[error("timed out")]
+    TimedOut,
+    #[error("TCP connection: {0}")]
+    Tcp(String),
 }

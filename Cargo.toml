@@ -38,6 +38,8 @@ rcgen = { version = "0.14", default-features = false, features = ["crypto", "rin
 ring = "0.17"
 subtle = "2.6"
 socket2 = "0.6"
+# TLS over TCP, the fallback when UDP (QUIC) is blocked; our own rustls configs, so no default provider.
+tokio-rustls = { version = "0.26", default-features = false }
 windows = "0.62"
 anyhow = "1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
