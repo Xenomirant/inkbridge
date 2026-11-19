@@ -82,6 +82,10 @@ fn parse_args() -> anyhow::Result<Args> {
                 ib_host::vdd_setup::check_platform().and_then(|()| ib_host::vdd_setup::install()),
             )),
             #[cfg(windows)]
+            "--detach-virtual-display" => std::process::exit(report(
+                ib_capture::detach_virtual_monitor().map_err(Into::into),
+            )),
+            #[cfg(windows)]
             "--remove-virtual-display" => std::process::exit(report(ib_host::vdd_setup::remove())),
             "--fix-usb-routing" => std::process::exit(run_routing(true)),
             "--undo-usb-routing" => std::process::exit(run_routing(false)),
@@ -109,6 +113,7 @@ fn parse_args() -> anyhow::Result<Args> {
                      inkbridge-host --forget N|all       unpair tablet N of --list-paired, or every tablet\n\
                      inkbridge-host --install-virtual-display  Windows: let the tablet be an extra screen (third-party driver, asks for admin once)\n\
                      inkbridge-host --remove-virtual-display   Windows: undo --install-virtual-display\n\
+                     inkbridge-host --detach-virtual-display   Windows: take the virtual monitor off the desktop (if it was left on)\n\
                      inkbridge-host --fix-usb-routing    keep internet traffic off USB-tethered tablets (asks for admin once)\n\
                      inkbridge-host --undo-usb-routing   restore Windows' automatic routing for them\n\
                      inkbridge-host --setup-uinput       Linux: allow pen pressure via a virtual tablet (asks for admin once)\n\
@@ -277,6 +282,14 @@ async fn main() -> anyhow::Result<()> {
         .init();
     let args = parse_args()?;
     platform::init_process();
+    // After a crash or restart the driver's monitor may be left on the
+    // desktop; it belongs there only while a tablet is an extra screen.
+    #[cfg(windows)]
+    if !platform::extend_wanted()
+        && let Err(e) = ib_capture::detach_virtual_monitor()
+    {
+        tracing::warn!("virtual display: {e}");
+    }
 
     let dir = storage::config_dir();
     let identity = storage::load_or_create_identity(&dir)?;

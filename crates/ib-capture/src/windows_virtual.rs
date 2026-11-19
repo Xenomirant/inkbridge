@@ -10,11 +10,16 @@
 //!   `HKLM\SOFTWARE\MikeTheTech\VirtualDisplayDriver\VDDPATH` names. The
 //!   installer points it at a folder the user may write, so the host adds
 //!   the tablet's shape there when it is missing.
-//! - Its control pipe (`\\.\pipe\MTTVirtualDisplayPipe`, UTF-16 commands)
-//!   turns monitors on and off: `SETDISPLAYCOUNT n` saves the count and
-//!   restarts the driver's adapter, which also reloads the modes.
-//! - The monitor's mode and position are set with the normal display
-//!   settings API, as the Settings app does.
+//! - The driver always has one monitor (it treats a count of 0 as invalid).
+//!   The host **attaches** it to the desktop with the tablet's mode while
+//!   the tablet is an extra screen and **detaches** it otherwise, with the
+//!   normal display settings API, as the Settings app does. No driver
+//!   restart is involved.
+//! - Only a new tablet shape needs the driver to reread its settings:
+//!   `RELOAD_DRIVER` on its control pipe (`\\.\pipe\MTTVirtualDisplayPipe`,
+//!   UTF-16 commands). This driver version's process restarts then (Windows
+//!   logs a user-mode driver crash and starts it again), so the installer
+//!   writes the common tablet shapes up front.
 //!
 //! Note: the driver's pipe accepts commands from any local program.
 
@@ -24,8 +29,9 @@ use std::time::{Duration, Instant};
 use windows::Win32::Foundation::{CloseHandle, GENERIC_READ, GENERIC_WRITE, HANDLE};
 use windows::Win32::Graphics::Gdi::{
     CDS_NORESET, CDS_TYPE, CDS_UPDATEREGISTRY, ChangeDisplaySettingsExW, DEVMODEW,
-    DISP_CHANGE_SUCCESSFUL, DISPLAY_DEVICE_ATTACHED_TO_DESKTOP, DISPLAY_DEVICEW, DM_PELSHEIGHT,
-    DM_PELSWIDTH, DM_POSITION, ENUM_CURRENT_SETTINGS, EnumDisplayDevicesW, EnumDisplaySettingsW,
+    DISP_CHANGE_SUCCESSFUL, DISPLAY_DEVICE_ATTACHED_TO_DESKTOP, DISPLAY_DEVICE_PRIMARY_DEVICE,
+    DISPLAY_DEVICEW, DM_PELSHEIGHT, DM_PELSWIDTH, DM_POSITION, ENUM_CURRENT_SETTINGS,
+    EnumDisplayDevicesW, EnumDisplaySettingsW,
 };
 use windows::Win32::Storage::FileSystem::{
     CreateFileW, FILE_FLAGS_AND_ATTRIBUTES, FILE_SHARE_NONE, OPEN_EXISTING, ReadFile, WriteFile,
@@ -131,7 +137,7 @@ fn settings_dir() -> Option<PathBuf> {
 }
 
 /// The driver's settings file with `count` monitors and `modes`.
-pub fn settings_xml(count: u32, modes: &[(u32, u32)]) -> String {
+pub fn settings_xml(count: u32, modes: &[(u32, u32)], gpu: &str) -> String {
     use std::fmt::Write as _;
     let mut xml = String::from(
         "<?xml version='1.0' encoding='utf-8'?>\n<!-- Written by Inkbridge. -->\n<vdd_settings>\n",
@@ -140,7 +146,10 @@ pub fn settings_xml(count: u32, modes: &[(u32, u32)]) -> String {
         xml,
         "    <monitors>\n        <count>{count}</count>\n    </monitors>"
     );
-    xml.push_str("    <gpu>\n        <friendlyname>default</friendlyname>\n    </gpu>\n");
+    let _ = writeln!(
+        xml,
+        "    <gpu>\n        <friendlyname>{gpu}</friendlyname>\n    </gpu>"
+    );
     let _ = writeln!(
         xml,
         "    <global>\n        <g_refresh_rate>{REFRESH}</g_refresh_rate>\n    </global>"
@@ -206,13 +215,33 @@ fn ensure_mode(mode: (u32, u32)) -> Result<bool, CaptureError> {
         modes.extend_from_slice(COMMON_MODES);
     }
     modes.push(mode);
-    std::fs::write(&path, settings_xml(1, &modes)).map_err(|e| {
+    std::fs::write(&path, settings_xml(1, &modes, &render_gpu())).map_err(|e| {
         CaptureError::Failed(format!(
             "can't add the tablet's shape to {}: {e}",
             path.display()
         ))
     })?;
     Ok(true)
+}
+
+/// The graphics adapter that drives the main monitor, by name. The driver
+/// renders on it, so capturing the virtual monitor stays on that GPU (on
+/// a PC with two, "default" may pick one without a monitor).
+pub fn render_gpu() -> String {
+    for i in 0.. {
+        let mut device = DISPLAY_DEVICEW {
+            cb: u32::try_from(size_of::<DISPLAY_DEVICEW>()).unwrap_or(0),
+            ..Default::default()
+        };
+        // SAFETY: `device` has its size set; enumeration stops at false.
+        if !unsafe { EnumDisplayDevicesW(PCWSTR::null(), i, &raw mut device, 0) }.as_bool() {
+            break;
+        }
+        if (device.StateFlags & DISPLAY_DEVICE_PRIMARY_DEVICE).0 != 0 {
+            return wide(&device.DeviceString);
+        }
+    }
+    "default".into()
 }
 
 fn wide(s: &[u16]) -> String {
@@ -294,6 +323,56 @@ fn set_mode(device: &str, (w, h): (u32, u32)) -> Result<(), CaptureError> {
     Ok(())
 }
 
+/// Takes monitor `device` off the desktop (it stays known to Windows, so
+/// it can come back without restarting the driver).
+fn detach(device: &str) -> Result<(), CaptureError> {
+    let name = HSTRING::from(device);
+    let mode = DEVMODEW {
+        dmSize: u16::try_from(size_of::<DEVMODEW>()).unwrap_or(0),
+        dmFields: DM_PELSWIDTH | DM_PELSHEIGHT | DM_POSITION,
+        ..Default::default()
+    };
+    // SAFETY: valid device name and DEVMODEW; stage, then apply all.
+    let staged = unsafe {
+        ChangeDisplaySettingsExW(
+            &name,
+            Some(&raw const mode),
+            None,
+            CDS_UPDATEREGISTRY | CDS_NORESET,
+            None,
+        )
+    };
+    if staged != DISP_CHANGE_SUCCESSFUL {
+        return Err(failed(format!(
+            "Windows refused to detach {device} ({staged:?})"
+        )));
+    }
+    // SAFETY: null device and mode apply the staged changes.
+    let applied =
+        unsafe { ChangeDisplaySettingsExW(PCWSTR::null(), None, None, CDS_TYPE::default(), None) };
+    if applied != DISP_CHANGE_SUCCESSFUL {
+        return Err(failed(format!(
+            "Windows didn't apply the display change ({applied:?})"
+        )));
+    }
+    Ok(())
+}
+
+/// Takes the driver's monitor off the desktop if it is on it. For start-up
+/// (after a crash or restart) and the installer: the monitor belongs on
+/// the desktop only while a tablet is an extra screen.
+pub fn detach_virtual_monitor() -> Result<(), CaptureError> {
+    match find_monitor() {
+        Some((device, true)) => detach(&device),
+        _ => Ok(()),
+    }
+}
+
+/// Whether the driver's monitor exists (on the desktop or not).
+pub fn monitor_present() -> bool {
+    find_monitor().is_some()
+}
+
 /// Windows' number for a device name (`\\.\DISPLAY3` → 3).
 fn display_number(device: &str) -> Option<u32> {
     device.rsplit("DISPLAY").next()?.parse().ok()
@@ -311,11 +390,14 @@ pub struct WindowsVirtualDisplay {
 impl WindowsVirtualDisplay {
     /// Whether the driver is installed and answering.
     pub fn supported() -> bool {
-        settings_dir().is_some() && command_once("PING").is_ok_and(|r| r.contains("PONG"))
+        // Its reply can be preceded by log messages, so reaching the pipe
+        // is the test.
+        settings_dir().is_some() && command_once("PING").is_ok()
     }
 
-    /// Turns on a monitor of `width × height` pixels. `picture` and `sharp`
-    /// are kept for the caller (the mode is the same either way here).
+    /// Puts the driver's monitor on the desktop with `width × height`
+    /// pixels. `picture` and `sharp` are kept for the caller (the mode is
+    /// the same either way here).
     pub fn new(
         _name: &str,
         width: u32,
@@ -323,13 +405,7 @@ impl WindowsVirtualDisplay {
         picture: (u32, u32),
         sharp: bool,
     ) -> Result<Self, CaptureError> {
-        ensure_mode((width, height))?;
-        // Saves the count and restarts the adapter (with any new mode).
-        command("SETDISPLAYCOUNT 1")?;
-        let device = wait_for_monitor()?;
-        set_mode(&device, (width, height))?;
-        let id = display_number(&device)
-            .ok_or_else(|| failed(format!("unexpected display name {device}")))?;
+        let id = show((width, height))?;
         Ok(Self {
             id,
             size: (width, height),
@@ -345,19 +421,10 @@ impl WindowsVirtualDisplay {
         height: u32,
         picture: (u32, u32),
     ) -> Result<(), CaptureError> {
-        if self.size == (width, height) {
-            self.picture = picture;
-            return Ok(());
+        if self.size != (width, height) {
+            self.id = show((width, height))?;
+            self.size = (width, height);
         }
-        if ensure_mode((width, height))? {
-            command("SETDISPLAYCOUNT 1")?;
-        }
-        let device = wait_for_monitor()?;
-        set_mode(&device, (width, height))?;
-        if let Some(id) = display_number(&device) {
-            self.id = id;
-        }
-        self.size = (width, height);
         self.picture = picture;
         Ok(())
     }
@@ -377,12 +444,24 @@ impl WindowsVirtualDisplay {
     }
 }
 
-/// Waits until the driver's monitor is part of the desktop.
-fn wait_for_monitor() -> Result<String, CaptureError> {
+/// Attaches the driver's monitor with `mode` (adding the mode to the
+/// driver's settings first if it is new); returns its display number.
+fn show(mode: (u32, u32)) -> Result<u32, CaptureError> {
+    if ensure_mode(mode)? {
+        command("RELOAD_DRIVER")?;
+    }
+    let device = wait_for(|_| true)?;
+    set_mode(&device, mode)?;
+    let device = wait_for(|attached| attached)?;
+    display_number(&device).ok_or_else(|| failed(format!("unexpected display name {device}")))
+}
+
+/// Waits until the driver's monitor exists and `ready(attached)` holds.
+fn wait_for(ready: impl Fn(bool) -> bool) -> Result<String, CaptureError> {
     let deadline = Instant::now() + Duration::from_secs(8);
     loop {
         if let Some((device, attached)) = find_monitor()
-            && attached
+            && ready(attached)
         {
             return Ok(device);
         }
@@ -396,7 +475,7 @@ fn wait_for_monitor() -> Result<String, CaptureError> {
 impl Drop for WindowsVirtualDisplay {
     fn drop(&mut self) {
         // Windows moves the windows on it to the other monitors.
-        let _ = command("SETDISPLAYCOUNT 0");
+        let _ = detach_virtual_monitor();
     }
 }
 
@@ -406,8 +485,9 @@ mod tests {
 
     #[test]
     fn settings_round_trip_their_modes() {
-        let xml = settings_xml(0, &[(1920, 1088), (2560, 1600)]);
-        assert!(xml.contains("<count>0</count>"));
+        let xml = settings_xml(1, &[(1920, 1088), (2560, 1600)], "NVIDIA GeForce RTX 5060");
+        assert!(xml.contains("<count>1</count>"));
+        assert!(xml.contains("<friendlyname>NVIDIA GeForce RTX 5060</friendlyname>"));
         assert_eq!(settings_modes(&xml), [(1920, 1088), (2560, 1600)]);
         assert_eq!(settings_modes(""), Vec::<(u32, u32)>::new());
     }

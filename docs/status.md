@@ -116,13 +116,16 @@ Still to do for M4:
   keyboard": to do.
 - **The tablet as an extra screen on Windows (Advanced, one admin prompt):**
   `--install-virtual-display` installs the third-party Virtual Display Driver (MIT, signed by SignPath
-  Foundation; pinned release and SHA-256, signature checked) with no monitor turned on;
-  `--remove-virtual-display` undoes it. The host turns one virtual monitor on (tablet-shaped, right of
-  the main screen) only while the tablet is an extra screen, through the driver's control pipe, and
-  adds missing tablet shapes to the driver's settings (`%ProgramData%\Inkbridge\VirtualDisplay`).
-  Note: the driver's pipe accepts commands from any local program. Checked: install on the PC and the
-  ignored test `a_virtual_monitor_appears_and_goes_away`. x64 only. Not yet: Windows display scaling
-  for the new monitor is Windows' default (change it in Settings > Display; Windows remembers it).
+  Foundation; pinned release and SHA-256, signature checked), rendering on the GPU of the main
+  monitor, with the common tablet shapes; `--remove-virtual-display` undoes it. The driver always has
+  one monitor (a count of 0 is invalid to it); the host **attaches** it to the desktop with the
+  tablet's shape while the tablet is an extra screen and **detaches** it otherwise (also at start-up,
+  and `--detach-virtual-display` by hand). Adding a new shape needs `RELOAD_DRIVER`, and this driver
+  version's process crashes and is restarted by Windows then (Windows allows a few restarts in a
+  while), so the common shapes are written at install. Note: the driver's pipe accepts commands from
+  any local program. Checked: install on the PC and the ignored test
+  `a_virtual_monitor_appears_and_goes_away` (no crash). x64 only. Windows display scaling for the
+  monitor is Windows' default (change it in Settings > Display; Windows remembers it).
 - **Security:** a pairing code works for 5 minutes after it is shown (and once). The host's private
   key file is owner-only on macOS/Linux (tightened on load for older installs).
 

@@ -27,8 +27,9 @@ mod windows;
 mod windows_virtual;
 #[cfg(windows)]
 pub use windows_virtual::{
-    COMMON_MODES, WindowsVirtualDisplay, settings_modes as vdd_settings_modes,
-    settings_xml as vdd_settings_xml,
+    COMMON_MODES, WindowsVirtualDisplay, detach_virtual_monitor,
+    monitor_present as vdd_monitor_present, render_gpu as vdd_render_gpu,
+    settings_modes as vdd_settings_modes, settings_xml as vdd_settings_xml,
 };
 #[cfg(target_os = "linux")]
 mod x11;

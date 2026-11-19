@@ -118,6 +118,17 @@ pub fn install() -> anyhow::Result<()> {
             "the installation didn't finish (the admin prompt was declined, or see {})",
             home().join("install.log").display()
         );
+        // The new monitor joins the desktop; it belongs there only while a
+        // tablet is an extra screen. (Display settings are per user, so
+        // this runs here, not in the elevated process.)
+        for _ in 0..50 {
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            if ib_capture::vdd_monitor_present() {
+                break;
+            }
+        }
+        ib_capture::detach_virtual_monitor()?;
+        println!("Done. The tablet's Screen menu now offers \"extra screen\".");
         return Ok(());
     }
     let result = install_elevated();
@@ -173,11 +184,12 @@ fn install_elevated() -> anyhow::Result<()> {
          $st.Open('ReadWrite'); $st.Add($c); $st.Close()"
     ))?;
 
-    // 3. Settings: no monitor until a tablet asks for one.
+    // 3. Settings: the common tablet shapes, rendered on the main GPU. The
+    //    driver's one monitor is taken off the desktop after installing.
     let modes = ib_capture::COMMON_MODES.to_vec();
     std::fs::write(
         dir.join("vdd_settings.xml"),
-        ib_capture::vdd_settings_xml(0, &modes),
+        ib_capture::vdd_settings_xml(1, &modes, &ib_capture::vdd_render_gpu()),
     )?;
     let dir_s = dir.display().to_string();
     // The driver (Local Service) and the host (the user) update the settings.
@@ -209,7 +221,6 @@ fn install_elevated() -> anyhow::Result<()> {
     // 4. The device and its driver.
     println!("Installing the driver…");
     crate::vdd_device::install(HARDWARE_ID, &inf)?;
-    println!("Done. The tablet's Screen menu now offers \"extra screen\".");
     Ok(())
 }
 
