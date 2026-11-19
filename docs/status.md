@@ -129,6 +129,20 @@ Still to do for M4:
 - **Security:** a pairing code works for 5 minutes after it is shown (and once). The host's private
   key file is owner-only on macOS/Linux (tightened on load for older installs).
 
+## In progress — desktop app (tray / menu bar)
+`apps/desktop` (Tauri 2, its own Cargo workspace; built in CI on all three OSes). Runs the same
+`ib_host::service::Service` as `inkbridge-host`, in the tray (Windows, Linux) or menu bar (macOS):
+- Tray icon (blue while a tablet is connected), tooltip and menu with the status, "Open Inkbridge",
+  "Pair a tablet…", "Quit". Closing the window keeps it running; a second start shows the window.
+- Window: status (tablet, USB/Wi-Fi, QUIC/TCP, round trip), pairing with the QR code (opens by
+  itself on first start), paired tablets (most recent first, older duplicates marked) with Forget,
+  "Start with this computer" (autostart plugin), and Advanced: USB through adb, the Windows extra
+  screen driver (install/remove), the USB routing fix. Notifications when a tablet connects or pairs.
+- Settings in `settings.json`, the log in `inkbridge.log` (both in the host's config folder).
+- Icons from `apps/desktop/icons/render.py` (the Android icon's geometry, no image library).
+Checked on Windows: start, window, pairing list, resizing. To do: installers (M6), macOS and Linux
+runs, the tablet's display choice and keyboard state in the window, a first-run guide.
+
 ## Open issues
 - Windows: root cause of occasional rejected pen events (a resync workaround exists, commit 945d526).
 - Possible brief flicker on the tablet after switching the View (zoom) mode.

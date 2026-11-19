@@ -20,3 +20,7 @@ apps/android/.kotlin/
 
 # personal files for the Linux validation kit (VPN account, notes)
 tools/linux-validation/personal/
+
+# Tauri desktop app
+apps/desktop/target/
+apps/desktop/gen/

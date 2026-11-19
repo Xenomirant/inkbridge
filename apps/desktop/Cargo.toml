@@ -1,0 +1,43 @@
+[package]
+name = "inkbridge-desktop"
+description = "Inkbridge for the computer: the host in the tray / menu bar."
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.100"
+license = "GPL-3.0-or-later"
+publish = false
+default-run = "inkbridge"
+
+# Its own workspace: the desktop app needs a web view (WebKitGTK on Linux),
+# which the core crates and their CI don't.
+[workspace]
+
+[[bin]]
+name = "inkbridge"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2.7", features = [] }
+
+[dependencies]
+ib-host = { path = "../../crates/ib-host" }
+ib-capture = { path = "../../crates/ib-capture" }
+ib-transport = { path = "../../crates/ib-transport" }
+ib-session = { path = "../../crates/ib-session" }
+tauri = { version = "2.12", features = ["tray-icon", "image-png"] }
+tauri-plugin-single-instance = "2.5"
+tauri-plugin-autostart = "2.7"
+tauri-plugin-notification = "2.8"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tokio = { version = "1.54", features = ["rt-multi-thread", "macros", "time", "sync"] }
+qrcode = "0.14"
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }

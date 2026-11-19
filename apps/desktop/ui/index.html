@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Inkbridge</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <img src="icon.png" alt="" class="logo">
+    <div>
+      <h1>Inkbridge</h1>
+      <p class="muted" id="computer">This computer</p>
+    </div>
+  </header>
+
+  <main>
+    <section class="card" id="status-card">
+      <div class="status-line">
+        <span class="dot" id="dot"></span>
+        <span id="status-title">Starting…</span>
+      </div>
+      <p class="muted" id="status-detail"></p>
+    </section>
+
+    <section class="card" id="pairing">
+      <div id="pair-idle">
+        <h2>Pair a tablet</h2>
+        <p class="muted">Show a QR code to scan with the Inkbridge app on the tablet.</p>
+        <button class="primary" id="pair-button">Show pairing code</button>
+      </div>
+      <div id="pair-open" hidden>
+        <h2>Scan with your tablet</h2>
+        <p class="muted">In the Inkbridge app, tap <b>Pair with a computer</b> and point the camera here.</p>
+        <div class="qr" id="qr"></div>
+        <p class="muted small" id="pair-note"></p>
+        <button id="pair-cancel">Cancel</button>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Paired tablets</h2>
+      <ul id="paired"></ul>
+      <p class="muted small" id="paired-empty">None yet.</p>
+      <p class="muted small">A tablet that isn't used for 90 days is forgotten and needs the code again.</p>
+    </section>
+    <section class="card">
+      <label class="toggle">
+        <input type="checkbox" id="autostart">
+        <span>
+          <b>Start with this computer</b>
+          <span class="muted small block">Inkbridge waits in the tray, so the tablet connects whenever you open it.</span>
+        </span>
+      </label>
+    </section>
+
+    <details class="card" id="advanced">
+      <summary><b>Advanced</b> <span class="muted small">options that need extra tools or admin rights</span></summary>
+
+      <label class="toggle">
+        <input type="checkbox" id="adb">
+        <span>
+          <b>USB without tethering (adb)</b>
+          <span class="muted small block">For a Mac, or when USB tethering is off. Needs Android's platform
+          tools (adb) on this computer and USB debugging on the tablet.</span>
+        </span>
+      </label>
+
+      <div class="option" id="extra-screen-win" hidden>
+        <b>Tablet as an extra screen</b>
+        <span class="muted small block">Windows needs a virtual display driver for this: the free,
+          open-source Virtual Display Driver (MIT licence, signed by SignPath Foundation). Installing it asks
+          for admin rights once. Then "Extra screen" appears in the tablet's Screen menu.</span>
+        <span class="muted small block" id="extra-screen-state"></span>
+        <button id="extra-screen-install">Install the driver…</button>
+        <button id="extra-screen-remove" hidden>Remove the driver…</button>
+      </div>
+
+      <div class="option" id="usb-routing" hidden>
+        <b>Keep internet traffic off the tablet</b>
+        <span class="muted small block">With USB tethering on, Windows may send some of this computer's
+          internet traffic through the tablet. This tells Windows to prefer your normal network
+          (asks for admin rights once).</span>
+        <button id="usb-routing-fix">Fix routing…</button>
+      </div>
+      <p class="muted small" id="advanced-note"></p>
+    </details>
+  </main>
+
+  <footer>
+    <span class="muted small">Closing this window keeps Inkbridge running in the tray.</span>
+    <button class="link" id="quit">Quit Inkbridge</button>
+  </footer>
+
+  <dialog id="ask">
+    <p id="ask-text"></p>
+    <div class="actions">
+      <button id="ask-cancel">Cancel</button>
+      <button class="danger" id="ask-ok">Forget</button>
+    </div>
+  </dialog>
+
+  <script src="app.js"></script>
+</body>
+</html>

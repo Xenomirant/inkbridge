@@ -1,0 +1,85 @@
+/* The palette of the tablet app (apps/android Ui.kt), with a light theme. */
+:root {
+  --bg: #f4f5f7;
+  --surface: #ffffff;
+  --outline: #e1e3e8;
+  --text: #15171c;
+  --muted: #5f6672;
+  --accent: #3b6fe0;
+  --ok: #2e9e5b;
+  --warn: #c0503f;
+  color-scheme: light dark;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #101114;
+    --surface: #1c1e24;
+    --outline: #2e313a;
+    --text: #eceef2;
+    --muted: #9aa0aa;
+    --accent: #6c9bff;
+    --ok: #5fd08f;
+    --warn: #ff8a7a;
+  }
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; }
+body {
+  background: var(--bg);
+  color: var(--text);
+  font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+  display: flex;
+  flex-direction: column;
+  user-select: none;
+}
+header { display: flex; align-items: center; gap: 12px; padding: 18px 20px 6px; }
+.logo { width: 40px; height: 40px; }
+h1 { font-size: 18px; margin: 0; }
+h2 { font-size: 14px; margin: 0 0 4px; }
+main { flex: 1; overflow-y: auto; padding: 10px 16px; display: flex; flex-direction: column; gap: 12px; }
+.card { background: var(--surface); border: 1px solid var(--outline); border-radius: 14px; padding: 14px 16px; }
+.muted { color: var(--muted); margin: 2px 0 0; }
+.small { font-size: 12px; }
+.status-line { display: flex; align-items: center; gap: 10px; font-size: 16px; font-weight: 600; }
+.dot { width: 10px; height: 10px; border-radius: 50%; background: var(--muted); flex: none; }
+.dot.on { background: var(--ok); box-shadow: 0 0 0 4px color-mix(in srgb, var(--ok) 20%, transparent); }
+button {
+  font: inherit; color: var(--text); background: transparent; border: 1px solid var(--outline);
+  border-radius: 10px; padding: 7px 14px; margin-top: 10px; cursor: pointer;
+}
+button:hover { border-color: var(--accent); }
+button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+button.link { border: none; padding: 4px 0; margin: 0; color: var(--muted); }
+button.link:hover { color: var(--warn); }
+.qr { background: #fff; border-radius: 12px; padding: 10px; margin: 12px auto 4px; width: fit-content; }
+.qr svg { display: block; width: 240px; height: 240px; }
+ul { list-style: none; margin: 8px 0 4px; padding: 0; }
+li { display: flex; align-items: center; justify-content: space-between; padding: 7px 0; border-top: 1px solid var(--outline); }
+li:first-child { border-top: none; }
+li .name { font-weight: 600; }
+footer { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 10px 20px 14px; }
+
+.block { display: block; }
+.toggle { display: flex; gap: 12px; align-items: flex-start; cursor: pointer; }
+.toggle input { margin-top: 3px; accent-color: var(--accent); width: 16px; height: 16px; flex: none; }
+details summary { cursor: pointer; list-style: none; }
+details summary::-webkit-details-marker { display: none; }
+details summary::before { content: "▸ "; color: var(--muted); }
+details[open] summary::before { content: "▾ "; }
+details .toggle, details .option { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--outline); }
+#quit { white-space: nowrap; }
+
+/* Everything shrinks with the window; long names wrap instead of overflowing. */
+main, .card, li > div { min-width: 0; }
+li .name, .muted { overflow-wrap: anywhere; }
+li { gap: 12px; }
+li button { flex: none; }
+dialog {
+  border: 1px solid var(--outline); border-radius: 14px; padding: 18px 20px;
+  background: var(--surface); color: var(--text); width: min(340px, calc(100vw - 32px));
+  box-shadow: 0 12px 40px rgb(0 0 0 / 0.35);
+}
+dialog::backdrop { background: rgb(0 0 0 / 0.35); }
+dialog p { margin: 0 0 6px; }
+.actions { display: flex; justify-content: flex-end; gap: 8px; }
+button.danger { background: var(--warn); border-color: var(--warn); color: #fff; font-weight: 600; }
