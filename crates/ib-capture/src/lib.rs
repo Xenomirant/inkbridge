@@ -26,7 +26,7 @@ mod windows;
 #[cfg(target_os = "linux")]
 mod x11;
 #[cfg(windows)]
-pub use windows::WindowsScreenSource;
+pub use windows::{WindowsScreenSource, windows_displays};
 #[cfg(target_os = "linux")]
 pub use x11::X11ScreenSource;
 

@@ -175,11 +175,66 @@ impl GraphicsCaptureApiHandler for Handler {
     }
 }
 
-/// Captures (a region of) the primary monitor.
+/// The monitors, main one first. A display's id is the number Windows gives
+/// it (`\\.\DISPLAY2` → 2), which the pen sink uses too. Bounds start at
+/// (0, 0): regions are relative to the display they are on.
+pub fn windows_displays() -> Result<Vec<Display>, CaptureError> {
+    let primary = Monitor::primary()
+        .map_err(|e| CaptureError::Unavailable(e.to_string()))?
+        .as_raw_hmonitor();
+    let monitors = Monitor::enumerate().map_err(|e| CaptureError::Unavailable(e.to_string()))?;
+    let mut all: Vec<Display> = monitors
+        .iter()
+        .filter_map(|m| {
+            let id = u64::try_from(m.index().ok()?).ok()?;
+            let (width, height) = (m.width().ok()?, m.height().ok()?);
+            let is_primary = m.as_raw_hmonitor() == primary;
+            Some(Display {
+                id,
+                name: display_name(m.name().ok(), id),
+                bounds: Region {
+                    x: 0,
+                    y: 0,
+                    width,
+                    height,
+                },
+                primary: is_primary,
+            })
+        })
+        .filter(|d| d.bounds.width > 0 && d.bounds.height > 0)
+        .collect();
+    // Main display first, then in Windows' numbering.
+    all.sort_by_key(|d| (!d.primary, d.id));
+    Ok(all)
+}
+
+/// The monitor's own name, or Windows' number for it.
+fn display_name(friendly: Option<String>, id: u64) -> String {
+    match friendly {
+        Some(name) if !name.trim().is_empty() => format!("{} (display {id})", name.trim()),
+        _ => format!("Display {id}"),
+    }
+}
+
+/// The monitor with Windows' number `id`, or the primary one for `None`.
+fn monitor(id: Option<u64>) -> Result<Monitor, CaptureError> {
+    let Some(id) = id else {
+        return Monitor::primary().map_err(|e| CaptureError::Unavailable(e.to_string()));
+    };
+    Monitor::enumerate()
+        .map_err(|e| CaptureError::Unavailable(e.to_string()))?
+        .into_iter()
+        .find(|m| m.index().ok().and_then(|i| u64::try_from(i).ok()) == Some(id))
+        .ok_or_else(|| CaptureError::Unavailable(format!("display {id} is not connected")))
+}
+
+/// Captures (a region of) one monitor, the primary one unless
+/// [`on_display`](Self::on_display) chose another.
 pub struct WindowsScreenSource {
     mailbox: Arc<Mailbox>,
     control: Option<CaptureControl<Handler, String>>,
     gpu: bool,
+    display: Option<u64>,
 }
 
 impl std::fmt::Debug for WindowsScreenSource {
@@ -197,6 +252,7 @@ impl WindowsScreenSource {
             mailbox: Arc::new(Mailbox::default()),
             control: None,
             gpu: false,
+            display: None,
         }
     }
 
@@ -206,7 +262,16 @@ impl WindowsScreenSource {
             mailbox: Arc::new(Mailbox::default()),
             control: None,
             gpu: true,
+            display: None,
         }
+    }
+
+    /// Captures the monitor with Windows' number `id` (see
+    /// [`windows_displays`]) instead of the primary one.
+    #[must_use]
+    pub fn on_display(mut self, id: u64) -> Self {
+        self.display = Some(id);
+        self
     }
 
     fn stop(&mut self) {
@@ -234,28 +299,12 @@ impl ScreenSource for WindowsScreenSource {
     }
 
     fn displays(&self) -> Result<Vec<Display>, CaptureError> {
-        let m = Monitor::primary().map_err(|e| CaptureError::Unavailable(e.to_string()))?;
-        let (w, h) = (
-            m.width().map_err(|e| CaptureError::Failed(e.to_string()))?,
-            m.height()
-                .map_err(|e| CaptureError::Failed(e.to_string()))?,
-        );
-        Ok(vec![Display {
-            id: 0,
-            name: m.name().unwrap_or_else(|_| "Primary display".into()),
-            bounds: Region {
-                x: 0,
-                y: 0,
-                width: w,
-                height: h,
-            },
-            primary: true,
-        }])
+        windows_displays()
     }
 
     fn start(&mut self, region: Region) -> Result<(), CaptureError> {
         self.stop();
-        let monitor = Monitor::primary().map_err(|e| CaptureError::Unavailable(e.to_string()))?;
+        let monitor = monitor(self.display)?;
         let x0 = u32::try_from(region.x.max(0)).unwrap_or(0);
         let y0 = u32::try_from(region.y.max(0)).unwrap_or(0);
         let crop = (x0, y0, x0 + region.width, y0 + region.height);
@@ -291,5 +340,31 @@ impl ScreenSource for WindowsScreenSource {
             .wait_timeout_while(slot, timeout, |s| s.is_none())
             .map_err(|_| CaptureError::Failed("capture mailbox poisoned".into()))?;
         Ok(slot.take())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_display_is_named_after_its_monitor_and_number() {
+        assert_eq!(
+            display_name(Some("AOC AG271QG4".into()), 2),
+            "AOC AG271QG4 (display 2)"
+        );
+        assert_eq!(display_name(Some("  ".into()), 3), "Display 3");
+        assert_eq!(display_name(None, 1), "Display 1");
+    }
+
+    /// Needs a desktop session (not CI): every connected monitor is listed
+    /// once, the main one first.
+    #[test]
+    #[ignore = "needs a Windows desktop session"]
+    fn the_monitors_are_listed_main_first() {
+        let all = windows_displays().unwrap();
+        assert!(all.first().is_some_and(|d| d.primary), "{all:?}");
+        assert_eq!(all.iter().filter(|d| d.primary).count(), 1);
+        eprintln!("{all:#?}");
     }
 }

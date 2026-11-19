@@ -55,9 +55,9 @@ impl VideoPipeline {
         #[cfg(windows)]
         {
             let fallback: SourceFactory =
-                Box::new(|| Box::new(ib_capture::WindowsScreenSource::new()));
+                Box::new(|| Box::new(crate::platform::windows_source(false)));
             Self::start_with(
-                Box::new(ib_capture::WindowsScreenSource::new_gpu()),
+                Box::new(crate::platform::windows_source(true)),
                 Some(fallback),
                 region,
                 client_max,

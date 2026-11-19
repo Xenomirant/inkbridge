@@ -181,6 +181,16 @@ pub fn pen_sink(desktop: Region) -> Result<Box<dyn ib_inject::PenSink>, ib_injec
     if let Some(id) = chosen_display().and_then(|id| u32::try_from(id).ok()) {
         return Ok(Box::new(ib_inject::MacPenSink::on_display(id)));
     }
+    #[cfg(windows)]
+    if let Some(id) = chosen_display() {
+        let mut sink = ib_inject::platform_sink(desktop)?;
+        let bounds = displays()
+            .into_iter()
+            .find(|d| d.id == id)
+            .map_or_else(primary_display, |d| d.bounds);
+        sink.set_display(id, bounds);
+        return Ok(sink);
+    }
     let sink = ib_inject::platform_sink(desktop);
     #[cfg(all(target_os = "linux", feature = "wayland"))]
     if sink.is_err()
@@ -225,8 +235,8 @@ pub fn switch_display(index: usize) -> anyhow::Result<ib_capture::Display> {
     };
     if !display.primary {
         anyhow::ensure!(
-            cfg!(target_os = "macos"),
-            "choosing a display works on macOS only so far"
+            cfg!(any(target_os = "macos", windows)),
+            "choosing a display works on macOS and Windows only so far"
         );
     }
     *DISPLAY
@@ -248,6 +258,12 @@ pub fn displays() -> Vec<ib_capture::Display> {
             }
         }
         all
+    }
+    #[cfg(windows)]
+    match ib_capture::windows_displays() {
+        Ok(all) if !all.is_empty() => return all,
+        Ok(_) => {}
+        Err(e) => tracing::warn!("could not list the displays: {e}"),
     }
     #[cfg(not(target_os = "macos"))]
     {
@@ -512,6 +528,21 @@ pub fn mac_source(gpu: bool) -> Result<ib_capture::MacScreenSource, ib_capture::
     match chosen_display() {
         Some(id) => source.on_display(id),
         None => Ok(source),
+    }
+}
+
+/// Windows screen capture on the chosen display: GPU frames for the
+/// hardware encoder, CPU frames for the software one.
+#[cfg(windows)]
+pub fn windows_source(gpu: bool) -> ib_capture::WindowsScreenSource {
+    let source = if gpu {
+        ib_capture::WindowsScreenSource::new_gpu()
+    } else {
+        ib_capture::WindowsScreenSource::new()
+    };
+    match chosen_display() {
+        Some(id) => source.on_display(id),
+        None => source,
     }
 }
 

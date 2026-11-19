@@ -15,7 +15,10 @@
 
 use ib_geometry::DesktopPoint;
 use ib_protocol::{Buttons, PenFeatures, PenSample, Tool};
-use windows::Win32::Foundation::{POINT, RECT};
+use windows::Win32::Foundation::{LPARAM, POINT, RECT};
+use windows::Win32::Graphics::Gdi::{
+    EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITORINFO, MONITORINFOEXW,
+};
 use windows::Win32::UI::Controls::{
     CreateSyntheticPointerDevice, DestroySyntheticPointerDevice, HSYNTHETICPOINTERDEVICE,
     POINTER_FEEDBACK_DEFAULT, POINTER_TYPE_INFO, POINTER_TYPE_INFO_0,
@@ -35,6 +38,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     PEN_MASK_ROTATION, PEN_MASK_TILT_X, PEN_MASK_TILT_Y, PT_PEN, PT_TOUCH, SM_CXVIRTUALSCREEN,
     SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, TOUCH_MASK_CONTACTAREA,
 };
+use windows::core::BOOL;
 
 use crate::tracker::{PenTracker, Step};
 use crate::{InjectError, PenSink, TouchPoint};
@@ -61,13 +65,73 @@ pub struct WindowsPenSink {
     /// Wheel units not sent yet (apps without high-resolution support act
     /// on whole notches; the remainder carries over).
     wheel_rest: (f64, f64),
+    /// Desktop position of the display being drawn on: positions from the
+    /// host are relative to it.
+    origin: (f64, f64),
 }
 
 // SAFETY: a synthetic pointer device handle is a process-wide user32 object,
 // not tied to the creating thread. The host uses each sink from one pen thread.
 unsafe impl Send for WindowsPenSink {}
 
+/// Desktop position (physical pixels) of the monitor Windows numbers `id`
+/// (`\\.\DISPLAY{id}`), the id the capture backend lists displays by.
+fn monitor_origin(id: u64) -> Option<(i32, i32)> {
+    struct Search {
+        device: String,
+        found: Option<(i32, i32)>,
+    }
+    unsafe extern "system" fn visit(
+        monitor: HMONITOR,
+        _dc: HDC,
+        _rect: *mut RECT,
+        data: LPARAM,
+    ) -> BOOL {
+        // SAFETY: `data` is the `Search` passed below, alive for the whole
+        // enumeration and used by this thread only.
+        let search = unsafe { &mut *(data.0 as *mut Search) };
+        let mut info = MONITORINFOEXW {
+            monitorInfo: MONITORINFO {
+                cbSize: size_of::<MONITORINFOEXW>() as u32,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        // SAFETY: valid monitor handle; `info` is a MONITORINFOEXW with its size set.
+        if unsafe { GetMonitorInfoW(monitor, (&raw mut info).cast()) }.as_bool() {
+            let len = info
+                .szDevice
+                .iter()
+                .position(|&c| c == 0)
+                .unwrap_or(info.szDevice.len());
+            if String::from_utf16_lossy(&info.szDevice[..len]) == search.device {
+                let r = info.monitorInfo.rcMonitor;
+                search.found = Some((r.left, r.top));
+                return false.into();
+            }
+        }
+        true.into()
+    }
+    let mut search = Search {
+        device: format!("\\\\.\\DISPLAY{id}"),
+        found: None,
+    };
+    // SAFETY: the callback only touches `search`, which outlives the call.
+    // The result is ignored: stopping early reports failure.
+    let _ =
+        unsafe { EnumDisplayMonitors(None, None, Some(visit), LPARAM(&raw mut search as isize)) };
+    search.found
+}
+
 impl WindowsPenSink {
+    /// A position on the shown display as a desktop pixel.
+    fn pixel(&self, at: DesktopPoint) -> POINT {
+        POINT {
+            x: (at.x + self.origin.0).round() as i32,
+            y: (at.y + self.origin.1).round() as i32,
+        }
+    }
+
     pub fn new() -> Result<Self, InjectError> {
         // SAFETY: plain FFI call with valid constant arguments.
         let device = unsafe { CreateSyntheticPointerDevice(PT_PEN, 1, POINTER_FEEDBACK_DEFAULT) }
@@ -82,6 +146,7 @@ impl WindowsPenSink {
             last_point: POINT::default(),
             touch_device: None,
             wheel_rest: (0.0, 0.0),
+            origin: (0.0, 0.0),
         })
     }
 
@@ -202,10 +267,7 @@ impl PenSink for WindowsPenSink {
     }
 
     fn emit(&mut self, sample: &PenSample, at: DesktopPoint) -> Result<(), InjectError> {
-        let point = POINT {
-            x: at.x.round() as i32,
-            y: at.y.round() as i32,
-        };
+        let point = self.pixel(at);
         self.last_point = point;
         for step in self.tracker.step(sample.state) {
             if let Err(e) = self.inject(step, sample, point) {
@@ -253,10 +315,7 @@ impl PenSink for WindowsPenSink {
                 } else {
                     flags
                 };
-                let p = POINT {
-                    x: t.at.x.round() as i32,
-                    y: t.at.y.round() as i32,
-                };
+                let p = self.pixel(t.at);
                 POINTER_TYPE_INFO {
                     r#type: PT_TOUCH,
                     Anonymous: POINTER_TYPE_INFO_0 {
@@ -305,7 +364,17 @@ impl PenSink for WindowsPenSink {
         send_inputs(&inputs)
     }
 
+    fn set_display(&mut self, id: u64, _bounds: ib_geometry::Region) {
+        // A display that is gone leaves the pen on the main one, where
+        // the host's capture falls back too.
+        self.origin = monitor_origin(id).map_or((0.0, 0.0), |(x, y)| (f64::from(x), f64::from(y)));
+    }
+
     fn move_pointer(&mut self, at: DesktopPoint) -> Result<(), InjectError> {
+        let at = DesktopPoint {
+            x: at.x + self.origin.0,
+            y: at.y + self.origin.1,
+        };
         // Absolute coordinates are normalised to 0..=65535 over the virtual desktop.
         // SAFETY: plain FFI calls without pointers.
         let (vx, vy, vw, vh) = unsafe {

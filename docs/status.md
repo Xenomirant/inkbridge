@@ -50,7 +50,9 @@ Implemented on the MacBook (Apple silicon, macOS 27), tested with the TB331FC ov
 - **Choosing a display:** from the tablet, the "Screen" button (shown when the computer has more
   than one display) lists them and switches live: the host restarts capture on the chosen display,
   moves the pen there and sends the new region. On the host, `--list-displays` numbers the displays
-  and `--display N` starts on one. macOS only so far; Windows and Linux offer the main display.
+  and `--display N` starts on one. macOS and Windows (monitors numbered as Windows numbers them,
+  `\\.\DISPLAYn`; the pen is offset by the monitor's desktop position); Linux offers the main
+  display. Windows is checked with one monitor only (the PC has one).
   Regions stay relative to the shown display; the pen sink adds its origin. Protocol 0.2 adds
   `Displays` and `SelectDisplay`; the host sends the list only to apps that speak 0.2, because older
   ones stop reading at an unknown message. Checked: the host against two real displays (ignored
