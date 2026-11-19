@@ -123,8 +123,9 @@ Still to do for M4:
   and `--detach-virtual-display` by hand). Adding a new shape needs `RELOAD_DRIVER`, and this driver
   version's process crashes and is restarted by Windows then (Windows allows a few restarts in a
   while), so the common shapes are written at install. Note: the driver's pipe accepts commands from
-  any local program. Checked: install on the PC and the ignored test
-  `a_virtual_monitor_appears_and_goes_away` (no crash). x64 only. Windows display scaling for the
+  any local program. Checked: install on the PC, the ignored test
+  `a_virtual_monitor_appears_and_goes_away` (no crash), and on the tablet over USB: the sharp extra
+  screen (1920x1088) with the pen, 30 ms screen latency. x64 only. Windows display scaling for the
   monitor is Windows' default (change it in Settings > Display; Windows remembers it).
 - **Security:** a pairing code works for 5 minutes after it is shown (and once). The host's private
   key file is owner-only on macOS/Linux (tightened on load for older installs).
@@ -147,6 +148,6 @@ Still to do for M4:
   Graphics reads display modes once per process, ADR-0008).
 - `cargo deny check` hasn't been run on the Mac (not installed there), so the licences of the `objc2`
   crates are unchecked.
-- `docs/latency.md` with measured end-to-end numbers (Wi-Fi vs USB, RTX vs iGPU) is still to write.
+- `docs/latency.md`: still to measure Windows over Wi-Fi, the Intel iGPU and a Linux host.
 - Linux NVIDIA: VA-API can't use NVENC; NVIDIA GPUs fall back to openh264. A direct NVENC backend is a
   follow-up (load `libnvidia-encode.so` at runtime; MIT-licensed headers).
