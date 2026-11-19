@@ -92,7 +92,6 @@ Building the Android app on the Mac: JDK 17, Android command-line tools, NDK and
 `./gradlew assembleDebug` in `apps/android` with `JAVA_HOME`, `ANDROID_HOME` and `ANDROID_NDK_HOME` set.
 
 Still to do for M4:
-- `docs/latency.md` rows for macOS (software and VideoToolbox, Wi-Fi).
 - **USB on macOS:** the TB331FC tethers RNDIS-only, which macOS doesn't support. Now possible with
   `--adb` over the TCP fallback (see below); not yet tried on the Mac.
 - Permission onboarding UI, notarised bundle (M6), iPad client.
