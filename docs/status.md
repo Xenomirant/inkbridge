@@ -77,7 +77,7 @@ Implemented on the MacBook (Apple silicon, macOS 27), tested with the TB331FC ov
   TCP), 33-35 ms capture-to-screen with p95 44-53 ms at 38-50 fps (over campus Wi-Fi the p95 was
   105-221 ms). After the app was reinstalled the pad came back and reconnected over USB alone.
 - **Desktop app:** builds and runs on the Mac (menu bar, its host listening, adb on from the
-  settings). Its menu-bar icon is not yet seen working.
+  settings); the user reports it working on 2026-11-20, together with typing from the tablet.
 - **Keyboard from the tablet:** CGEvent key events (`ib-inject/src/macos_keys.rs`), same
   Accessibility permission as the pen. Text as characters (any language); keys and shortcuts by key
   code, a shortcut letter at its US-layout key (macOS matches Command shortcuts through a Latin
