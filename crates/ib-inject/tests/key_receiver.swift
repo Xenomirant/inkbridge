@@ -1,24 +1,10 @@
 // Prints every key-down event this process receives, one per line:
-// "<key code> <modifiers> <characters>", and pinch gestures as
-// "magnify <change> <phase>". Used by the ignored tests
-// `macos::tests::keys_reach_an_app` and `pinch_reaches_an_app`, which post
-// events to this process only.
+// "<key code> <modifiers> <characters>". Used by the ignored test
+// `macos::tests::keys_reach_an_app`, which posts events to this process only.
 import AppKit
 
 final class Receiver: NSApplication {
     override func sendEvent(_ event: NSEvent) {
-        if event.type == .magnify {
-            let phase: String
-            switch event.phase {
-            case .began: phase = "began"
-            case .changed: phase = "changed"
-            case .ended: phase = "ended"
-            case .cancelled: phase = "cancelled"
-            default: phase = "other"
-            }
-            print("magnify \(event.magnification) \(phase)")
-            fflush(stdout)
-        }
         if event.type == .keyDown {
             let f = event.modifierFlags
             var mods = ""
