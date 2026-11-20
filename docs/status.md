@@ -41,8 +41,11 @@ USB tethering):**
     AXIS_TILT/AXIS_ORIENTATION in the app on the TB331FC to see whether Android/ZUI or the app loses it.
   - **The pen button doesn't reach the computer.** The Tab Pen Plus button is `BTN_STYLUS2`
     (Android `BUTTON_STYLUS_SECONDARY`); `StylusMapper` only forwards PRIMARY/SECONDARY.
-  - A tablet that dials in over the tethering link is labelled `transport=Wifi` (the host's own
-    dial over USB is labelled correctly).
+  - A session that starts over Wi-Fi stays there when USB tethering comes up (seen when QUIC over
+    the cable timed out at connect). The host can dial the tablet over the cable during the session
+    (tried: every 5 s, handing the connection to the accept loop, which replaces the Wi-Fi session),
+    but the app only listens for that dial while connecting (`Session.acceptUsb`). Needs the app to
+    keep its USB listener open during a Wi-Fi session; then the host part can go in.
 - Still to do: `--adb`, the desktop app, latency figures. The picture in portrait is upscaled
   (900x1440 of the monitor onto 1200x1920); the extra screen will fix it.
 

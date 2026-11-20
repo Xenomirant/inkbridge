@@ -1,6 +1,6 @@
 //! Accept loop and per-tablet session.
 
-use std::net::{IpAddr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 use std::sync::mpsc::Sender;
 
@@ -304,13 +304,11 @@ impl Host {
                 }
             };
             let _slot = self.session.lock().await;
-            // A tablet on this computer's own loopback came through
-            // `adb reverse`: a USB cable.
-            let kind = if conn.is_tcp() && conn.remote_addr().ip().to_canonical().is_loopback() {
-                TransportKind::Usb
-            } else {
-                TransportKind::Wifi
-            };
+            let tablets: Vec<Ipv4Addr> = crate::usb::tether_links()
+                .iter()
+                .map(|l| l.tablet)
+                .collect();
+            let kind = transport_of(conn.remote_addr().ip(), conn.is_tcp(), &tablets);
             let session = self.run_session(&conn, kind, on_paired);
             tokio::pin!(session);
             loop {
@@ -975,9 +973,47 @@ fn is_probably_tether(ip: std::net::Ipv4Addr) -> bool {
     o[0] == 192 && o[1] == 168 && (o[2] == 42 || o[2] == 43 || o[2] == 44)
 }
 
+/// The link an incoming connection came over: a tablet on this computer's
+/// loopback came through `adb reverse`, one at a tethering link's tablet
+/// address dialled in over the cable; anything else is the network.
+fn transport_of(remote: IpAddr, tcp: bool, tether_tablets: &[Ipv4Addr]) -> TransportKind {
+    let remote = remote.to_canonical();
+    let over_adb = tcp && remote.is_loopback();
+    let over_tether = matches!(remote, IpAddr::V4(v4) if tether_tablets.contains(&v4));
+    if over_adb || over_tether {
+        TransportKind::Usb
+    } else {
+        TransportKind::Wifi
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn incoming_links_are_classified() {
+        let tether = [Ipv4Addr::new(192, 168, 152, 140)];
+        let ip = |s: &str| s.parse::<IpAddr>().unwrap();
+        assert_eq!(
+            transport_of(ip("127.0.0.1"), true, &[]),
+            TransportKind::Usb,
+            "adb reverse"
+        );
+        assert_eq!(
+            transport_of(ip("127.0.0.1"), false, &[]),
+            TransportKind::Wifi
+        );
+        assert_eq!(
+            transport_of(ip("::ffff:192.168.152.140"), false, &tether),
+            TransportKind::Usb,
+            "dialled in over tethering (IPv4-mapped)"
+        );
+        assert_eq!(
+            transport_of(ip("10.200.71.98"), false, &tether),
+            TransportKind::Wifi
+        );
+    }
 
     /// A tablet's handshake with the host, as the app does it.
     async fn join(
