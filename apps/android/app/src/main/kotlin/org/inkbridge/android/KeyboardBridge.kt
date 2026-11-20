@@ -186,12 +186,19 @@ class KeyboardBridge(context: Context, private val session: () -> Session?) : Vi
     fun applyNames(names: KeyNames) {
         if (names == this.names) return
         this.names = names
-        for ((role, label) in KeyRow.labels(names)) modifierChips[role]?.text = label
+        for ((role, label) in KeyRow.labels(names)) modifierChips[role]?.let { setLabel(it, label) }
+    }
+
+    /** Symbols (⌘ ⇧ ←) are small in the text font: they get a larger size. */
+    private fun setLabel(chip: TextView, label: String) {
+        chip.text = label
+        chip.textSize = if (KeyRow.isSymbol(label)) SYMBOL_SIZE else TEXT_SIZE
     }
 
     /** The row of keys a tablet keyboard lacks, for the glass bar. */
     fun extraKeys(context: Context): LinearLayout {
         fun key(label: String, key: TabletKey) = Ui.chip(context, label) { press(key) }
+            .also { setLabel(it, label) }
         fun modifier(label: String, toggle: () -> Boolean) = Ui.chip(context, label) { chip ->
             Ui.setChecked(chip, toggle())
         }.also { modifierChips[label] = it }
@@ -220,5 +227,9 @@ class KeyboardBridge(context: Context, private val session: () -> Session?) : Vi
     private companion object {
         /** Keyboards delete at most a word at a time; cap runaway requests. */
         const val MAX_REPEAT = 64
+
+        /** Text sizes of the key row's labels, in sp. */
+        const val TEXT_SIZE = 13f
+        const val SYMBOL_SIZE = 19f
     }
 }

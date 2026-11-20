@@ -71,6 +71,13 @@ Implemented on the MacBook (Apple silicon, macOS 27), tested with the TB331FC ov
   pixel for pixel. About 32-40 ms capture-to-screen over Wi-Fi in both. Checked with the ignored
   tests `an_extra_display_appears_and_goes_away` and `the_tablet_becomes_an_extra_screen`, and on
   the tablet. Not yet checked: a pen stroke on it.
+- **USB:** the TB331FC tethers RNDIS-only, which macOS doesn't support, so the Mac uses `--adb`
+  (or "USB without tethering" in the desktop app): `adb reverse` and the TCP fallback. Checked on
+  2026-11-20 with the desktop app: the tablet connects over the cable by itself (`transport=Usb`,
+  TCP), 33-35 ms capture-to-screen with p95 44-53 ms at 38-50 fps (over campus Wi-Fi the p95 was
+  105-221 ms). After the app was reinstalled the pad came back and reconnected over USB alone.
+- **Desktop app:** builds and runs on the Mac (menu bar, its host listening, adb on from the
+  settings). Its menu-bar icon is not yet seen working.
 - **Keyboard from the tablet:** CGEvent key events (`ib-inject/src/macos_keys.rs`), same
   Accessibility permission as the pen. Text as characters (any language); keys and shortcuts by key
   code, a shortcut letter at its US-layout key (macOS matches Command shortcuts through a Latin
@@ -100,8 +107,6 @@ Building the Android app on the Mac: JDK 17, Android command-line tools, NDK and
 `./gradlew assembleDebug` in `apps/android` with `JAVA_HOME`, `ANDROID_HOME` and `ANDROID_NDK_HOME` set.
 
 Still to do for M4:
-- **USB on macOS:** the TB331FC tethers RNDIS-only, which macOS doesn't support. Now possible with
-  `--adb` over the TCP fallback (see below); not yet tried on the Mac.
 - Permission onboarding UI, notarised bundle (M6), iPad client.
 
 ## Done since the Mac work (Windows PC)

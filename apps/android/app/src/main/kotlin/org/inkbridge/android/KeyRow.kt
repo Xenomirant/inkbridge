@@ -11,4 +11,7 @@ object KeyRow {
         "Alt" to names.alt,
         "Shift" to names.shift,
     )
+
+    /** Whether a label is a symbol (⌘, ⇧, ←) rather than a word (Ctrl). */
+    fun isSymbol(label: String): Boolean = label.isNotEmpty() && label.none { it.isLetterOrDigit() }
 }
