@@ -115,6 +115,28 @@ pub struct HostInfo {
 }
 
 /// One of the computer's displays, for the tablet's display menu.
+/// What the computer calls its modifier keys, for the tablet's key row.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct KeyNames {
+    /// The Windows key, or Command on a Mac.
+    pub meta: String,
+    pub ctrl: String,
+    pub alt: String,
+    pub shift: String,
+}
+
+impl Default for KeyNames {
+    /// Names for computers that don't say (protocol 0.3 hosts are Windows).
+    fn default() -> Self {
+        Self {
+            meta: "Win".into(),
+            ctrl: "Ctrl".into(),
+            alt: "Alt".into(),
+            shift: "Shift".into(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct HostDisplay {
     pub name: String,
@@ -355,6 +377,7 @@ pub struct Session {
     displays: Arc<Mutex<DisplayChoice>>,
     /// Whether the computer types what the tablet sends (protocol 0.3).
     keyboard: Arc<AtomicBool>,
+    key_names: Arc<Mutex<KeyNames>>,
     /// Incoming encoded video, if the session streams the screen.
     video: Option<Mutex<mpsc::Receiver<VideoChunk>>>,
     telemetry: Arc<Mutex<Telemetry>>,
@@ -510,6 +533,11 @@ impl Session {
     /// Whether the computer can type for the tablet (show a keyboard).
     pub fn keyboard_available(&self) -> bool {
         self.keyboard.load(Ordering::Acquire)
+    }
+
+    /// What the computer calls its modifier keys.
+    pub fn key_names(&self) -> KeyNames {
+        self.key_names.lock().map_or_default(|g| g.clone())
     }
 
     /// Types `text` on the computer (the tablet keyboard's committed text).
@@ -826,6 +854,7 @@ impl Session {
             region: tasks.region,
             displays: tasks.displays,
             keyboard: tasks.keyboard,
+            key_names: tasks.key_names,
             video,
             telemetry: tasks.telemetry,
         }))
@@ -924,7 +953,74 @@ struct SessionTasks {
     region: Arc<Mutex<ib_protocol::Region>>,
     displays: Arc<Mutex<DisplayChoice>>,
     keyboard: Arc<AtomicBool>,
+    key_names: Arc<Mutex<KeyNames>>,
     telemetry: Arc<Mutex<Telemetry>>,
+}
+
+/// What the computer has told the tablet, shared between the control
+/// reader and the session's methods.
+#[derive(Clone)]
+struct HostState {
+    region: Arc<Mutex<ib_protocol::Region>>,
+    telemetry: Arc<Mutex<Telemetry>>,
+    displays: Arc<Mutex<DisplayChoice>>,
+    keyboard: Arc<AtomicBool>,
+    key_names: Arc<Mutex<KeyNames>>,
+}
+
+impl HostState {
+    /// Takes in one message from the computer.
+    fn apply(&self, msg: ControlMessage) {
+        match msg {
+            ControlMessage::Keyboard { available } => {
+                self.keyboard.store(available, Ordering::Release);
+            }
+            ControlMessage::KeyNames {
+                meta,
+                ctrl,
+                alt,
+                shift,
+            } => {
+                if let Ok(mut g) = self.key_names.lock() {
+                    *g = KeyNames {
+                        meta,
+                        ctrl,
+                        alt,
+                        shift,
+                    };
+                }
+            }
+            ControlMessage::Displays { displays, current } => {
+                if let Ok(mut g) = self.displays.lock() {
+                    *g = DisplayChoice {
+                        displays,
+                        current: usize::from(current),
+                    };
+                }
+            }
+            ControlMessage::SetRegion(r) => {
+                if let Ok(mut g) = self.region.lock() {
+                    *g = r;
+                }
+            }
+            ControlMessage::Pong {
+                t0_us,
+                t1_us,
+                t2_us,
+            } => {
+                let t3 = ib_clock::now_us();
+                if let Ok(mut t) = self.telemetry.lock() {
+                    t.sync.add(ib_clock::Exchange {
+                        t0: t0_us,
+                        t1: t1_us,
+                        t2: t2_us,
+                        t3,
+                    });
+                }
+            }
+            _ => {}
+        }
+    }
 }
 
 /// Starts the control writer (so input handlers never block on the
@@ -952,50 +1048,17 @@ fn spawn_session_tasks(
         closed_writer.store(true, Ordering::Release);
     });
 
-    let region = Arc::new(Mutex::new(initial_region));
-    let region_reader = region.clone();
-    let telemetry = Arc::new(Mutex::new(Telemetry::default()));
-    let telemetry_reader = telemetry.clone();
-    let displays = Arc::new(Mutex::new(DisplayChoice::default()));
-    let displays_reader = displays.clone();
-    let keyboard = Arc::new(AtomicBool::new(false));
-    let keyboard_reader = keyboard.clone();
+    let state = HostState {
+        region: Arc::new(Mutex::new(initial_region)),
+        telemetry: Arc::new(Mutex::new(Telemetry::default())),
+        displays: Arc::new(Mutex::new(DisplayChoice::default())),
+        keyboard: Arc::new(AtomicBool::new(false)),
+        key_names: Arc::new(Mutex::new(KeyNames::default())),
+    };
+    let reader = state.clone();
     runtime.spawn(async move {
         while let Ok(msg) = receiver.recv().await {
-            match msg {
-                ControlMessage::Keyboard { available } => {
-                    keyboard_reader.store(available, Ordering::Release);
-                }
-                ControlMessage::Displays { displays, current } => {
-                    if let Ok(mut g) = displays_reader.lock() {
-                        *g = DisplayChoice {
-                            displays,
-                            current: usize::from(current),
-                        };
-                    }
-                }
-                ControlMessage::SetRegion(r) => {
-                    if let Ok(mut g) = region_reader.lock() {
-                        *g = r;
-                    }
-                }
-                ControlMessage::Pong {
-                    t0_us,
-                    t1_us,
-                    t2_us,
-                } => {
-                    let t3 = ib_clock::now_us();
-                    if let Ok(mut t) = telemetry_reader.lock() {
-                        t.sync.add(ib_clock::Exchange {
-                            t0: t0_us,
-                            t1: t1_us,
-                            t2: t2_us,
-                            t3,
-                        });
-                    }
-                }
-                _ => {}
-            }
+            reader.apply(msg);
         }
     });
 
@@ -1026,10 +1089,11 @@ fn spawn_session_tasks(
     SessionTasks {
         control_tx,
         closed,
-        region,
-        displays,
-        keyboard,
-        telemetry,
+        region: state.region,
+        displays: state.displays,
+        keyboard: state.keyboard,
+        key_names: state.key_names,
+        telemetry: state.telemetry,
     }
 }
 

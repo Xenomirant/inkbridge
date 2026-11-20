@@ -565,6 +565,16 @@ impl Host {
             })
             .await?;
         }
+        if minor >= ib_protocol::KEY_NAMES_MINOR && self.config.keyboard {
+            let [meta, ctrl, alt, shift] = crate::platform::key_names().map(String::from);
+            ctl.send(&ControlMessage::KeyNames {
+                meta,
+                ctrl,
+                alt,
+                shift,
+            })
+            .await?;
+        }
         self.send_displays(ctl, session).await
     }
 
@@ -1391,6 +1401,12 @@ mod tests {
         })
         .await;
         assert!(available);
+        let meta = wait_for(&mut ctl, |m| match m {
+            ControlMessage::KeyNames { meta, .. } => Some(meta),
+            _ => None,
+        })
+        .await;
+        assert_eq!(meta, crate::platform::key_names()[0]);
         ctl.send(&ControlMessage::Text("paint\n".into()))
             .await
             .unwrap();

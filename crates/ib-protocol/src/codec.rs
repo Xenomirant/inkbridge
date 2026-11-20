@@ -137,6 +137,12 @@ mod tests {
                 key: crate::Key::Function(5),
                 modifiers: crate::Modifiers::NONE,
             },
+            ControlMessage::KeyNames {
+                meta: "⌘".into(),
+                ctrl: "⌃".into(),
+                alt: "⌥".into(),
+                shift: "⇧".into(),
+            },
         ] {
             let bytes = encode(&msg).unwrap();
             assert_eq!(decode::<ControlMessage>(&bytes).unwrap(), msg);

@@ -26,7 +26,9 @@ pub use control::{
 };
 pub use keys::{Key, MAX_TEXT_LEN, Modifiers};
 pub use pen::{Buttons, PenBatch, PenSample, PenState, Tool};
-pub use version::{DISPLAY_CHOICE_MINOR, KEYBOARD_MINOR, PROTOCOL_VERSION, ProtocolVersion};
+pub use version::{
+    DISPLAY_CHOICE_MINOR, KEY_NAMES_MINOR, KEYBOARD_MINOR, PROTOCOL_VERSION, ProtocolVersion,
+};
 
 /// Default UDP port: the host listens here (Wi-Fi), and a tablet listens here
 /// on its USB tethering link for the host to dial in. Below 32768, outside

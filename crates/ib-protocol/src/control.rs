@@ -183,4 +183,13 @@ pub enum ControlMessage {
         key: crate::Key,
         modifiers: crate::Modifiers,
     },
+    /// Host → client (protocol 0.4+, after `Keyboard`): what the computer
+    /// calls its modifier keys, for the tablet's key row (`⌘` on a Mac,
+    /// `Win` on Windows). Only sent to clients of 0.4 or later.
+    KeyNames {
+        meta: String,
+        ctrl: String,
+        alt: String,
+        shift: String,
+    },
 }

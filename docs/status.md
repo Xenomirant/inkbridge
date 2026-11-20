@@ -71,6 +71,14 @@ Implemented on the MacBook (Apple silicon, macOS 27), tested with the TB331FC ov
   pixel for pixel. About 32-40 ms capture-to-screen over Wi-Fi in both. Checked with the ignored
   tests `an_extra_display_appears_and_goes_away` and `the_tablet_becomes_an_extra_screen`, and on
   the tablet. Not yet checked: a pen stroke on it.
+- **Keyboard from the tablet:** CGEvent key events (`ib-inject/src/macos_keys.rs`), same
+  Accessibility permission as the pen. Text as characters (any language); keys and shortcuts by key
+  code, a shortcut letter at its US-layout key (macOS matches Command shortcuts through a Latin
+  layout, also while Cyrillic is active; on AZERTY and similar the letter lands on the US position).
+  The Win key of the tablet's row is Command; alone it opens Spotlight. The row shows ⌘ ⌃ ⌥ ⇧
+  (protocol 0.4 `KeyNames`). Checked with the ignored test `keys_reach_an_app`, which types into a
+  helper app (`ib-inject/tests/key_receiver.swift`) through `CGEventPostToPid`, never into the
+  focused app.
 - **Still screen:** capture delivers nothing while the screen is still, so the pipeline encodes the
   last frame four more times (50 ms apart) to let it get sharp.
 - **Full screen:** the pad draws under the system bars and under Lenovo's three-dots window bar
@@ -111,8 +119,8 @@ Still to do for M4:
 - **Keyboard from the tablet (protocol 0.3, Windows host):** a "Keys" button on the pad opens
   Android's keyboard (any language) and a row of extra keys: Esc, Tab, Win (tap: Start; hold: keep
   it pressed for Win+key), Ctrl/Alt/Shift (stay pressed for the next key), arrows, Del, Enter. A
-  hardware keyboard on the tablet works too. macOS (CGEvent) and Linux (uinput/portal) still say "no
-  keyboard": to do.
+  hardware keyboard on the tablet works too. macOS since 2026-11-20 (below); Linux (uinput/portal)
+  still says "no keyboard": to do.
 - **The tablet as an extra screen on Windows (Advanced, one admin prompt):**
   `--install-virtual-display` installs the third-party Virtual Display Driver (MIT, signed by SignPath
   Foundation; pinned release and SHA-256, signature checked), rendering on the GPU of the main

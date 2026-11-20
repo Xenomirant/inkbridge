@@ -11,6 +11,7 @@ import android.view.inputmethod.InputMethodManager
 import android.widget.LinearLayout
 import android.widget.TextView
 import org.inkbridge.core.KeyModifiers
+import org.inkbridge.core.KeyNames
 import org.inkbridge.core.Session
 import org.inkbridge.core.TabletKey
 
@@ -176,6 +177,18 @@ class KeyboardBridge(context: Context, private val session: () -> Session?) : Vi
         modifierChips.values.forEach { Ui.setChecked(it, false) }
     }
 
+    private var names: KeyNames? = null
+
+    /**
+     * Shows the computer's names for the modifier keys (⌘ ⌃ ⌥ ⇧ on a
+     * Mac). The chips keep their roles; only the text changes.
+     */
+    fun applyNames(names: KeyNames) {
+        if (names == this.names) return
+        this.names = names
+        for ((role, label) in KeyRow.labels(names)) modifierChips[role]?.text = label
+    }
+
     /** The row of keys a tablet keyboard lacks, for the glass bar. */
     fun extraKeys(context: Context): LinearLayout {
         fun key(label: String, key: TabletKey) = Ui.chip(context, label) { press(key) }
@@ -186,8 +199,8 @@ class KeyboardBridge(context: Context, private val session: () -> Session?) : Vi
             context,
             key("Esc", TabletKey.Escape),
             key("Tab", TabletKey.Tab),
-            // Tap: the key alone (opens Start). Hold: keep it pressed for
-            // the next key (Win+E, Win+S).
+            // Tap: the key alone (opens Start; Spotlight on a Mac). Hold:
+            // keep it pressed for the next key (Win+E, ⌘+Space).
             Ui.chip(context, "Win") { press(TabletKey.Meta) }.apply {
                 modifierChips["Win"] = this
                 setOnLongClickListener { meta = !meta; Ui.setChecked(this, meta); true }

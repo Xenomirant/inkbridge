@@ -26,7 +26,7 @@ impl std::fmt::Display for ProtocolVersion {
 }
 
 /// The version implemented by this build.
-pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion { major: 0, minor: 3 };
+pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion { major: 0, minor: 4 };
 
 /// First minor version whose clients understand `Displays` and can send
 /// `SelectDisplay`. Older clients stop reading at a message they don't know.
@@ -35,6 +35,9 @@ pub const DISPLAY_CHOICE_MINOR: u16 = 2;
 /// First minor version that has keyboard input: hosts understand `Text` and
 /// `Key`, clients understand `Keyboard`.
 pub const KEYBOARD_MINOR: u16 = 3;
+
+/// First minor version whose clients understand `KeyNames`.
+pub const KEY_NAMES_MINOR: u16 = 4;
 
 #[cfg(test)]
 mod tests {

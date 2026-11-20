@@ -602,6 +602,18 @@ pub fn primary_display() -> Region {
     }
 }
 
+/// What this computer calls its modifier keys: Command/Windows, Control,
+/// Option/Alt, Shift. Shown on the tablet's key row.
+pub fn key_names() -> [&'static str; 4] {
+    if cfg!(target_os = "macos") {
+        ["⌘", "⌃", "⌥", "⇧"]
+    } else if cfg!(windows) {
+        ["Win", "Ctrl", "Alt", "Shift"]
+    } else {
+        ["Super", "Ctrl", "Alt", "Shift"]
+    }
+}
+
 /// The computer's name as shown on the tablet.
 pub fn host_name() -> String {
     #[cfg(target_os = "macos")]

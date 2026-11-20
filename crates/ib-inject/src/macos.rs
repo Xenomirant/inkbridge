@@ -10,10 +10,10 @@
 //! DriverKit entitlement (see `docs/architecture.md`).
 
 use ib_geometry::{DesktopPoint, Region};
-use ib_protocol::{Buttons, PenFeatures, PenSample, PenState, Tool};
+use ib_protocol::{Buttons, Key, Modifiers, PenFeatures, PenSample, PenState, Tool};
 use objc2_core_foundation::CGPoint;
 use objc2_core_graphics::{
-    CGDisplayBounds, CGDisplayCopyDisplayMode, CGDisplayMode, CGEvent, CGEventField,
+    CGDisplayBounds, CGDisplayCopyDisplayMode, CGDisplayMode, CGEvent, CGEventField, CGEventFlags,
     CGEventMouseSubtype, CGEventTapLocation, CGEventType, CGMainDisplayID, CGMouseButton,
     CGPreflightPostEventAccess, CGRequestPostEventAccess, CGScrollEventUnit,
 };
@@ -116,6 +116,8 @@ pub struct MacPenSink {
     last: CGPoint,
     scroll_carry: (f64, f64),
     access: Access,
+    /// Where key events go: the focused app, or (tests) one process.
+    key_target: Option<i32>,
 }
 
 /// Whether macOS lets this process post input events (the Accessibility
@@ -204,6 +206,7 @@ impl MacPenSink {
             last: CGPoint { x: 0.0, y: 0.0 },
             scroll_carry: (0.0, 0.0),
             access: Access::default(),
+            key_target: None,
         }
     }
 
@@ -213,6 +216,40 @@ impl MacPenSink {
             x: self.origin.x + at.x / self.scale,
             y: self.origin.y + at.y / self.scale,
         }
+    }
+
+    /// Posts one key event with exactly `flags`, so modifiers held on the
+    /// Mac's own keyboard don't change what the tablet typed.
+    fn post_key(
+        &self,
+        code: u16,
+        down: bool,
+        flags: u64,
+        text: Option<&[u16]>,
+    ) -> Result<(), InjectError> {
+        let event = CGEvent::new_keyboard_event(None, code, down);
+        let Some(e) = event.as_deref() else {
+            return Err(InjectError::Rejected("could not create the event".into()));
+        };
+        CGEvent::set_flags(Some(e), CGEventFlags(flags));
+        if let Some(units) = text {
+            // SAFETY: `units` is a live slice of `units.len()` UTF-16 units.
+            unsafe {
+                CGEvent::keyboard_set_unicode_string(Some(e), units.len() as _, units.as_ptr());
+            };
+        }
+        match self.key_target {
+            Some(pid) => CGEvent::post_to_pid(pid, Some(e)),
+            None => CGEvent::post(CGEventTapLocation::HIDEventTap, Some(e)),
+        }
+        Ok(())
+    }
+
+    /// Sends key events to process `pid` only, wherever the focus is (for
+    /// tests that must not type into the user's apps).
+    #[cfg(test)]
+    pub(crate) fn keys_to_process(&mut self, pid: i32) {
+        self.key_target = Some(pid);
     }
 
     fn post(event: Option<&CGEvent>) -> Result<(), InjectError> {
@@ -380,6 +417,43 @@ impl PenSink for MacPenSink {
         Self::post(event.as_deref())
     }
 
+    fn keyboard(&self) -> bool {
+        true
+    }
+
+    fn type_text(&mut self, text: &str) -> Result<(), InjectError> {
+        if !self.access.ready()? {
+            return Ok(());
+        }
+        for piece in crate::macos_keys::text_pieces(text) {
+            match piece {
+                crate::macos_keys::TextPiece::Key(code) => {
+                    self.post_key(code, true, 0, None)?;
+                    self.post_key(code, false, 0, None)?;
+                }
+                crate::macos_keys::TextPiece::Char(units) => {
+                    // Key code 0 with the character attached: apps take the
+                    // character, whatever key the code stands for.
+                    self.post_key(0, true, 0, Some(&units))?;
+                    self.post_key(0, false, 0, Some(&units))?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn key(&mut self, key: Key, modifiers: Modifiers) -> Result<(), InjectError> {
+        if !self.access.ready()? {
+            return Ok(());
+        }
+        let strokes = crate::macos_keys::key_strokes(key, modifiers)
+            .ok_or_else(|| crate::macos_keys::unknown_key(key))?;
+        for s in strokes {
+            self.post_key(s.code, s.down, s.flags, None)?;
+        }
+        Ok(())
+    }
+
     fn release(&mut self) -> Result<(), InjectError> {
         let steps = self.tracker.step(PenState::OutOfRange);
         self.apply(&steps, &PenSample::default())
@@ -468,6 +542,60 @@ mod tests {
         let mut acc = 0.0;
         assert_eq!(whole_units(&mut acc, -2.5), -2);
         assert_eq!(whole_units(&mut acc, -0.5), -1);
+    }
+
+    /// Types text and shortcuts into a small app that records the key
+    /// events it gets (`tests/key_receiver.swift`). The events go to that
+    /// process only, so nothing is typed into the app you are using.
+    /// Needs Xcode's `swiftc` and the Accessibility permission for the
+    /// terminal app. Run with:
+    /// `cargo test -p ib-inject --lib keys_reach_an_app -- --ignored --nocapture`
+    #[test]
+    #[ignore = "posts key events to a helper app; needs swiftc and Accessibility"]
+    fn keys_reach_an_app() -> Result<(), Box<dyn std::error::Error>> {
+        use std::io::BufRead;
+        let dir = std::env::temp_dir().join(format!("inkbridge-keys-{}", std::process::id()));
+        std::fs::create_dir_all(&dir)?;
+        let receiver = dir.join("key_receiver");
+        let built = std::process::Command::new("swiftc")
+            .arg(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/key_receiver.swift"
+            ))
+            .arg("-o")
+            .arg(&receiver)
+            .status()?;
+        assert!(built.success(), "swiftc failed");
+        let mut child = std::process::Command::new(&receiver)
+            .arg("4")
+            .stdout(std::process::Stdio::piped())
+            .spawn()?;
+        let mut lines = std::io::BufReader::new(child.stdout.take().unwrap()).lines();
+        assert_eq!(lines.next().transpose()?.as_deref(), Some("ready"));
+
+        let mut sink = MacPenSink::with_scale(1.0);
+        sink.keys_to_process(i32::try_from(child.id())?);
+        sink.type_text("hi Жё😀\n")?;
+        sink.key(Key::Char('c'), Modifiers::META)?;
+        sink.key(Key::Char('?'), Modifiers::CTRL)?;
+        sink.key(Key::Left, Modifiers::SHIFT)?;
+        sink.key(Key::Meta, Modifiers::META)?;
+        let got: Vec<String> = lines.map_while(Result::ok).collect();
+        let _ = child.wait();
+        println!("{got:#?}");
+        let typed: String = got
+            .iter()
+            .take(6)
+            .filter_map(|l| l.splitn(3, ' ').nth(2))
+            .collect();
+        assert_eq!(typed, "hi Жё😀");
+        // (The line reader drops Return's "\r" as a line ending.)
+        assert!(got[6].starts_with("36 - "), "Return: {}", got[6]);
+        assert_eq!(got[7], "8 cmd+ c");
+        assert!(got[8].starts_with("44 ctrl+shift+"), "{}", got[8]);
+        assert!(got[9].starts_with("123 shift+"), "{}", got[9]);
+        assert_eq!(got[10], "49 cmd+  ", "Command-Space");
+        Ok(())
     }
 
     #[test]

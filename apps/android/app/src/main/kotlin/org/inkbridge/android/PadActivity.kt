@@ -87,6 +87,7 @@ class PadActivity : ComponentActivity() {
             val host = s.host()
             screens?.visibility = if (s.displays().size > 1) android.view.View.VISIBLE else android.view.View.GONE
             keysChip?.visibility = if (s.keyboardAvailable()) android.view.View.VISIBLE else android.view.View.GONE
+            if (s.keyboardAvailable()) keyboard.applyNames(s.keyNames())
             pad.onHostRegion(host.regionX, host.regionY, host.regionWidth, host.regionHeight)
             val link = if (host.usb) "USB" else "Wi-Fi"
             val full = if (s.hasVideo()) {

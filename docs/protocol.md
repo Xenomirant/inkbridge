@@ -42,8 +42,14 @@ A host that can type sends `Keyboard { available }` after the hello, only to cli
 `Text(String)` for committed text (at most 4096 bytes per message, any language; `\n` = Enter) and
 `Key { key, modifiers }` for keys without a character and shortcuts (`Char(c)` + Ctrl/Alt/Shift/Meta).
 The host injects them on the pen thread, so typing and pen strokes stay in order. Windows types text
-as Unicode characters (`KEYEVENTF_UNICODE`), independent of its keyboard layout. macOS and Linux
-hosts announce `available: false` until their backends implement it.
+as Unicode characters (`KEYEVENTF_UNICODE`), macOS as characters attached to key events
+(`CGEventKeyboardSetUnicodeString`), both independent of the keyboard layout. Linux hosts announce
+`available: false` until their backend implements it.
+
+**Key names (0.4):** after `Keyboard { available: true }` a host sends `KeyNames { meta, ctrl, alt,
+shift }`, what it calls its modifier keys (`⌘ ⌃ ⌥ ⇧` on a Mac, `Win Ctrl Alt Shift` on Windows), only
+to clients of 0.4 or later. Clients label their key row with them; without the message they assume
+Windows names.
 
 ## TCP fallback (ADR-0009)
 Same port number as QUIC, TLS 1.3 with the same certificates, pinning and ALPN. A session is **three
