@@ -18,3 +18,10 @@ Showing a copy of a display is one use; the other is the tablet as a **second sc
 - − Rules out the Mac App Store for the host. The host is distributed directly (notarised bundle, M6), so this costs nothing now.
 - − Core Graphics reads display modes once per process, so the host can't ask the pixel scale of a display that appeared after it started. For our own display the scale follows from the modes we set (2x wherever it fits the display's pixel limit). Choosing one of the hidden 1x variants in System Settings would make picture and pen disagree. The same limit means a monitor plugged in while the host runs is not listed until the host restarts.
 - Windows needs an indirect display driver (admin rights: an "Advanced" option). Wayland desktops can create a virtual monitor through the screen-sharing portal. Both are follow-ups.
+
+## Review (2026-11-20)
+The project rule since then is to leave out features that can break with any OS release. This one was
+reviewed against it and kept: macOS has no public way to add a display, the feature checks the API at
+run time and disappears cleanly without it, and mirroring and choosing a real display don't depend on
+it. A synthesized pinch gesture (undocumented `CGEvent` fields) was removed under the same rule, since
+it had no such fallback value.

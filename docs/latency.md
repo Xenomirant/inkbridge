@@ -16,6 +16,11 @@ Median with p95 in brackets. Add a row whenever something changes the path.
 
 Still to measure: Windows over Wi-Fi (QUIC), the Intel iGPU, a Linux host.
 
+**Other video work on the computer** competes for the same hardware encoder. On the MacBook, two
+hardware video conversions (ffmpeg, VideoToolbox) running at the same time doubled the screen
+latency to about 70 ms (encode 45 ms instead of 12 ms); it returned to 34 ms as soon as they paused.
+Strokes then feel worse and apps seem to misbehave (2026-11-20).
+
 The tablet (TB331FC) spends about 15 ms of this in its hardware decoder (low-latency mode,
 decode-order output), see `docs/status.md`.
 
