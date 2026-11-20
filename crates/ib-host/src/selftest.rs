@@ -387,10 +387,14 @@ fn pointer(r: &mut Report, desktop: &crate::wayland::WaylandDesktop, display: ib
             std::thread::sleep(Duration::from_millis(15));
         }
     }
-    if ask("Did the pointer move around a square in the middle of the screen?") {
-        r.pass("pointer moves where expected");
-    } else {
-        r.fail("pointer did not move as expected (user)");
+    match ask("Did the pointer move around a square in the middle of the screen?") {
+        Some(true) => r.pass("pointer moves where expected"),
+        Some(false) => r.fail("pointer did not move as expected (user)"),
+        None => {
+            r.info(
+                "pointer moved without errors; not confirmed (no one at the terminal to answer)",
+            );
+        }
     }
 }
 
@@ -408,12 +412,24 @@ fn uinput(r: &mut Report) {
     }
 }
 
-/// Asks a yes/no question on the terminal (defaults to no).
-fn ask(question: &str) -> bool {
+/// Asks a yes/no question on the terminal (anything but yes is no).
+/// `None` when no one can answer: stdin isn't a terminal or is closed, as
+/// when the self-test runs from a script or an agent.
+fn ask(question: &str) -> Option<bool> {
+    use std::io::IsTerminal;
+    if !std::io::stdin().is_terminal() {
+        return None;
+    }
     print!("\n>>> {question} [y/n] ");
     let _ = std::io::stdout().flush();
     let mut answer = String::new();
-    let _ = std::io::stdin().lock().read_line(&mut answer);
+    match std::io::stdin().lock().read_line(&mut answer) {
+        Ok(0) | Err(_) => None,
+        Ok(_) => Some(is_yes(&answer)),
+    }
+}
+
+fn is_yes(answer: &str) -> bool {
     matches!(answer.trim(), "y" | "Y" | "yes")
 }
 
@@ -439,6 +455,16 @@ fn save_ppm(frame: &Frame, path: &Path) -> std::io::Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_yes_counts_as_yes() {
+        assert!(is_yes("y\n"));
+        assert!(is_yes(" Y "));
+        assert!(is_yes("yes"));
+        assert!(!is_yes("n"));
+        assert!(!is_yes(""));
+        assert!(!is_yes("yep"));
+    }
 
     #[test]
     fn luma_matches_the_encoder_conversion() {
