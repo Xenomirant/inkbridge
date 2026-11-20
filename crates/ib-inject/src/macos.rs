@@ -118,6 +118,7 @@ pub struct MacPenSink {
     access: Access,
     /// Where key events go: the focused app, or (tests) one process.
     key_target: Option<i32>,
+    pinch: crate::macos_gesture::Pinch,
 }
 
 /// Whether macOS lets this process post input events (the Accessibility
@@ -207,6 +208,7 @@ impl MacPenSink {
             scroll_carry: (0.0, 0.0),
             access: Access::default(),
             key_target: None,
+            pinch: crate::macos_gesture::Pinch::default(),
         }
     }
 
@@ -417,6 +419,46 @@ impl PenSink for MacPenSink {
         Self::post(event.as_deref())
     }
 
+    fn touch(&mut self, frame: &[crate::TouchPoint]) -> Result<(), InjectError> {
+        use crate::macos_gesture::{self as g, PinchStep};
+        if !self.access.ready()? {
+            return Ok(());
+        }
+        let Some(step) = self.pinch.frame(frame) else {
+            return Ok(());
+        };
+        let (at, magnification) = match step {
+            PinchStep::Begin { at } => {
+                // Gestures go to the window under the pointer. (Not in
+                // tests that post to one process: the pointer is the user's.)
+                if self.key_target.is_none() {
+                    self.move_pointer(at)?;
+                }
+                (at, 0.0)
+            }
+            PinchStep::Change { at, magnification } => (at, magnification),
+            PinchStep::End { at, .. } => (at, 0.0),
+        };
+        let event = CGEvent::new(None);
+        let Some(e) = event.as_deref() else {
+            return Err(InjectError::Rejected("could not create the event".into()));
+        };
+        CGEvent::set_type(Some(e), CGEventType(g::GESTURE_EVENT));
+        CGEvent::set_location(Some(e), self.to_points(at));
+        CGEvent::set_integer_value_field(Some(e), CGEventField(g::FIELD_HID_TYPE), g::HID_ZOOM);
+        CGEvent::set_double_value_field(
+            Some(e),
+            CGEventField(g::FIELD_MAGNIFICATION),
+            magnification,
+        );
+        CGEvent::set_integer_value_field(Some(e), CGEventField(g::FIELD_PHASE), step.phase());
+        match self.key_target {
+            Some(pid) => CGEvent::post_to_pid(pid, Some(e)),
+            None => CGEvent::post(CGEventTapLocation::HIDEventTap, Some(e)),
+        }
+        Ok(())
+    }
+
     fn keyboard(&self) -> bool {
         true
     }
@@ -595,6 +637,70 @@ mod tests {
         assert!(got[8].starts_with("44 ctrl+shift+"), "{}", got[8]);
         assert!(got[9].starts_with("123 shift+"), "{}", got[9]);
         assert_eq!(got[10], "49 cmd+  ", "Command-Space");
+        Ok(())
+    }
+
+    /// A two-finger pinch reaches an app as a trackpad magnify gesture:
+    /// the helper app (`tests/key_receiver.swift`) prints the `NSEvent`s it
+    /// gets. Events go to that process only. Needs Xcode's `swiftc` and the
+    /// Accessibility permission for the terminal app. Run with:
+    /// `cargo test -p ib-inject --lib pinch_reaches_an_app -- --ignored --nocapture`
+    #[test]
+    #[ignore = "posts gesture events to a helper app; needs swiftc and Accessibility"]
+    fn pinch_reaches_an_app() -> Result<(), Box<dyn std::error::Error>> {
+        use crate::TouchPoint;
+        use ib_protocol::TouchPhase::{Down, Move, Up};
+        use std::io::BufRead;
+        let dir = std::env::temp_dir().join(format!("inkbridge-pinch-{}", std::process::id()));
+        std::fs::create_dir_all(&dir)?;
+        let receiver = dir.join("key_receiver");
+        let built = std::process::Command::new("swiftc")
+            .arg(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/key_receiver.swift"
+            ))
+            .arg("-o")
+            .arg(&receiver)
+            .status()?;
+        assert!(built.success(), "swiftc failed");
+        let mut child = std::process::Command::new(&receiver)
+            .arg("3")
+            .stdout(std::process::Stdio::piped())
+            .spawn()?;
+        let mut lines = std::io::BufReader::new(child.stdout.take().unwrap()).lines();
+        assert_eq!(lines.next().transpose()?.as_deref(), Some("ready"));
+
+        let mut sink = MacPenSink::with_scale(1.0);
+        sink.keys_to_process(i32::try_from(child.id())?);
+        let finger = |id, x, phase| TouchPoint {
+            id,
+            at: DesktopPoint { x, y: 300.0 },
+            phase,
+        };
+        sink.touch(&[finger(0, 400.0, Down), finger(1, 500.0, Down)])?;
+        sink.touch(&[finger(0, 375.0, Move), finger(1, 525.0, Move)])?;
+        sink.touch(&[finger(0, 350.0, Move), finger(1, 550.0, Move)])?;
+        sink.touch(&[finger(0, 350.0, Up), finger(1, 550.0, Up)])?;
+        let got: Vec<String> = lines.map_while(Result::ok).collect();
+        let _ = child.wait();
+        println!("{got:#?}");
+        let pinch: Vec<&String> = got.iter().filter(|l| l.starts_with("magnify")).collect();
+        assert!(
+            pinch.first().is_some_and(|l| l.ends_with("began")),
+            "{got:?}"
+        );
+        assert!(
+            pinch.last().is_some_and(|l| l.ends_with("ended")),
+            "{got:?}"
+        );
+        // AppKit may merge consecutive changes, as with a real trackpad:
+        // check the total (1.5x, then 1.33x the spread).
+        let total: f64 = pinch
+            .iter()
+            .filter(|l| l.ends_with("changed"))
+            .filter_map(|l| l.split(' ').nth(1)?.parse::<f64>().ok())
+            .sum();
+        assert!((total - (0.5 + 1.0 / 3.0)).abs() < 0.01, "total {total}");
         Ok(())
     }
 

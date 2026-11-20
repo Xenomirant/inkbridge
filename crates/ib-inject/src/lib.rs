@@ -13,6 +13,8 @@ mod linux;
 #[cfg(target_os = "macos")]
 mod macos;
 #[cfg(target_os = "macos")]
+mod macos_gesture;
+#[cfg(target_os = "macos")]
 mod macos_keys;
 #[cfg(all(target_os = "linux", feature = "wayland"))]
 mod portal;
