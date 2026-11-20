@@ -108,6 +108,7 @@ async function loadAdvanced() {
   $("adb").checked = a.adb;
   const win = a.os === "windows";
   $("extra-screen-win").hidden = !win;
+  $("extra-screen-mac").hidden = !(a.os === "macos" && a.extra_screen_installed);
   $("usb-routing").hidden = !win;
   $("extra-screen-state").textContent = a.extra_screen_installed ? "Installed." : "Not installed.";
   $("extra-screen-install").hidden = a.extra_screen_installed;

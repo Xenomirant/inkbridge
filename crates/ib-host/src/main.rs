@@ -103,8 +103,8 @@ fn parse_args() -> anyhow::Result<Args> {
             "-h" | "--help" => {
                 println!(
                     "inkbridge-host [--port N] [--pair] [--display N] [--extend] [--fake-sink]\n\
-                     inkbridge-host --extend [--sharp]   macOS: use the tablet as an extra screen (also in the tablet's Screen menu);\n\
-                                                         --sharp: pixel for pixel on the tablet, with thin bars\n\
+                     inkbridge-host --extend [--sharp]   macOS: use the tablet as an extra screen (also in its Screen menu);\n\
+                     \x20                                  --sharp: pixel for pixel on the tablet, with thin bars\n\
                      inkbridge-host --list-displays      number the connected displays for --display\n\
                      inkbridge-host --adb                USB without tethering (macOS, or tethering off): needs adb and USB debugging\n\
                      inkbridge-host --list-paired        list the paired tablets (forgotten after 90 days unused)\n\

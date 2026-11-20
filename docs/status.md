@@ -167,8 +167,6 @@ runs, the tablet's display choice and keyboard state in the window, a first-run 
   (checked by restarting the host during a 9 s stylus stroke).
 - macOS: a monitor plugged in while the host runs is not offered until the host restarts (Core
   Graphics reads display modes once per process, ADR-0008).
-- `cargo deny check` hasn't been run on the Mac (not installed there), so the licences of the `objc2`
-  crates are unchecked.
 - `docs/latency.md`: still to measure Windows over Wi-Fi, the Intel iGPU and a Linux host.
 - Linux NVIDIA: VA-API can't use NVENC; NVIDIA GPUs fall back to openh264. A direct NVENC backend is a
   follow-up (load `libnvidia-encode.so` at runtime; MIT-licensed headers).
