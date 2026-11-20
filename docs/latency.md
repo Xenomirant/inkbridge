@@ -11,6 +11,7 @@ Median with p95 in brackets. Add a row whenever something changes the path.
 | 2026-11-18 | MacBook (Apple silicon, macOS 27) | VideoToolbox | Wi-Fi (campus) | 1680x1088 | 34 ms (40–150) | 12 ms incl. capture wait | 5 ms | p95 follows Wi-Fi stalls |
 | 2026-11-18 | MacBook | openh264 (software) | Wi-Fi (campus) | 1680x1088 | 258 ms | 55 ms | — | why native encoders |
 | 2026-11-18 | MacBook, extra screen | VideoToolbox | Wi-Fi (campus) | 1920x1088 / 1740x1088 | 32–40 ms | — | — | |
+| 2026-11-20 | MacBook | VideoToolbox | USB, `adb reverse` (TCP fallback) | 1680x1088 | 33–35 ms (44–53) | 13–14 ms incl. capture wait | 2 ms | desktop app, 38–50 fps |
 | 2026-11-19 | Windows 11, RTX 5060 | Media Foundation (NVENC) | USB, `adb reverse` (TCP fallback) | 1920x1088 extra screen | 30 ms (53–57) | 4 ms | 2–3 ms | round trip 3 ms |
 
 Still to measure: Windows over Wi-Fi (QUIC), the Intel iGPU, a Linux host.
