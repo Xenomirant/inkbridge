@@ -59,6 +59,15 @@ class PadActivity : ComponentActivity() {
         info.postDelayed(showControls, RESTORE_MS)
     }
 
+    /** Shows or hides the tablet's keyboard together with the key row. */
+    private fun setTyping(on: Boolean) {
+        android.util.Log.d("Inkbridge", "keyboard ${if (on) "open" else "closed"}")
+        if (on) keyboard.show() else keyboard.hide()
+        extraKeys?.visibility = if (on) android.view.View.VISIBLE else android.view.View.GONE
+        keysChip?.let { Ui.setChecked(it, on) }
+        if (!on) hideSystemBars()
+    }
+
     private fun dp(value: Float): Int = (value * resources.displayMetrics.density).toInt()
 
     /** Status text in the normal colour, or as a warning. */
@@ -138,13 +147,10 @@ class PadActivity : ComponentActivity() {
         }
         screens = choose
         keyboard = KeyboardBridge(this) { SessionHolder.session }
-        val keys = keyboard.extraKeys(this).apply { visibility = android.view.View.GONE }
+        val keys = keyboard.extraKeys(this) { setTyping(false) }.apply { visibility = android.view.View.GONE }
         extraKeys = keys
-        val typing = Ui.chip(this, "Keys") { chip ->
-            if (keyboard.shown) keyboard.hide() else keyboard.show()
-            Ui.setChecked(chip, keyboard.shown)
-            keys.visibility = if (keyboard.shown) android.view.View.VISIBLE else android.view.View.GONE
-        }.apply { visibility = android.view.View.GONE }
+        val typing = Ui.chip(this, "Keys") { setTyping(!keyboard.shown) }
+            .apply { visibility = android.view.View.GONE }
         keysChip = typing
         val tools = if (screen != null) {
             Ui.glassBar(this, clear, view, fit, choose, typing)
@@ -158,6 +164,15 @@ class PadActivity : ComponentActivity() {
         val margin = dp(8f)
         setContentView(FrameLayout(this).apply {
             setBackgroundColor(Color.BLACK)
+            // The keyboard closed another way (its own ⌄ button, Back):
+            // put the key row away too.
+            var imeWasVisible = false
+            androidx.core.view.ViewCompat.setOnApplyWindowInsetsListener(this) { _, insets ->
+                val imeVisible = insets.isVisible(WindowInsetsCompat.Type.ime())
+                if (imeWasVisible && !imeVisible && keyboard.shown) setTyping(false)
+                imeWasVisible = imeVisible
+                insets
+            }
             screen?.let { addView(it, FrameLayout.LayoutParams(0, 0)) }
             ink?.let { addView(it.view) }
             addView(pad)

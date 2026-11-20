@@ -40,14 +40,22 @@ class KeyboardBridge(context: Context, private val session: () -> Session?) : Vi
     var shown = false
         private set
 
+    /**
+     * Opens the keyboard. Through the window's insets controller: an
+     * implicit request is ignored after the user closed the keyboard once.
+     */
     fun show() {
         requestFocus()
-        imm.showSoftInput(this, InputMethodManager.SHOW_IMPLICIT)
+        androidx.core.view.ViewCompat.getWindowInsetsController(this)
+            ?.show(androidx.core.view.WindowInsetsCompat.Type.ime())
+            ?: imm.showSoftInput(this, InputMethodManager.SHOW_FORCED)
         shown = true
     }
 
     fun hide() {
-        imm.hideSoftInputFromWindow(windowToken, 0)
+        androidx.core.view.ViewCompat.getWindowInsetsController(this)
+            ?.hide(androidx.core.view.WindowInsetsCompat.Type.ime())
+            ?: imm.hideSoftInputFromWindow(windowToken, 0)
         clearFocus()
         shown = false
     }
@@ -196,7 +204,7 @@ class KeyboardBridge(context: Context, private val session: () -> Session?) : Vi
     }
 
     /** The row of keys a tablet keyboard lacks, for the glass bar. */
-    fun extraKeys(context: Context): LinearLayout {
+    fun extraKeys(context: Context, onClose: () -> Unit): LinearLayout {
         fun key(label: String, key: TabletKey) = Ui.chip(context, label) { press(key) }
             .also { setLabel(it, label) }
         fun modifier(label: String, toggle: () -> Boolean) = Ui.chip(context, label) { chip ->
@@ -221,6 +229,8 @@ class KeyboardBridge(context: Context, private val session: () -> Session?) : Vi
             key("→", TabletKey.Right),
             key("Del", TabletKey.Delete),
             key("⏎", TabletKey.Enter),
+            // Puts the keyboard and this row away.
+            Ui.chip(context, "✕") { onClose() }.also { setLabel(it, "✕") }
         )
     }
 
