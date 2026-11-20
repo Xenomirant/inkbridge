@@ -392,6 +392,13 @@ pub fn set_sharp_wanted(wanted: bool) {
 }
 
 /// The size step for the extra display of kind `sharp`.
+#[cfg_attr(
+    not(target_os = "macos"),
+    expect(
+        clippy::unnecessary_min_or_max,
+        reason = "one size step off macOS, so the bound is always 0"
+    )
+)]
 pub fn step_wanted(sharp: bool) -> usize {
     match STEP_WANTED.load(std::sync::atomic::Ordering::Relaxed) {
         usize::MAX => default_step(sharp),
