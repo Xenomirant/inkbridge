@@ -23,9 +23,17 @@ Implemented and unit-tested (see `docs/linux.md`):
   Mesa d3d12 in WSL only.
 - `inkbridge-host --self-test` and the live-USB kit (`tools/linux-validation`).
 
-**Not yet validated on a real Linux desktop.** Paused to do macOS first (on the MacBook, cloned from
-GitHub); resume by booting the
-live-USB kit (Ubuntu 26.04.1; Intel iGPU encodes via iHD, the RTX runs nouveau there).
+**Validation on a real desktop (2026-11-20, live-USB Ubuntu 26.04.1, GNOME Wayland, TB331FC over
+USB tethering):**
+- VA-API on the Intel iGPU (`iHD` 26.1.2, High profile): self-test passes, 1920x1080 encode median
+  6.1 ms (p95 8.1 ms); real screen frames median 9.7 ms. The RTX runs nouveau there and is skipped.
+- Portal screen sharing + PipeWire: 2560x1440 stream, colours correct.
+- No-setup portal pointer: the user confirmed the picture, hover and touch-to-click/drag work.
+- Two-finger scroll works (Terminal, Firefox); pinch-zoom works in apps through the portal touchscreen.
+  Found and fixed on the way: a second portal request hung (ashpd's cached D-Bus connection outlived
+  its runtime), scroll gestures never ended, and pinches were dropped (no touch in the portal backend).
+- Still to do: uinput pressure (`--setup-uinput`), `--adb`, the desktop app, latency figures. The
+  picture in portrait is upscaled (900x1440 of the monitor onto 1200x1920); the extra screen will fix it.
 
 ## In progress — M4 macOS host
 Implemented on the MacBook (Apple silicon, macOS 27), tested with the TB331FC over Wi-Fi:
