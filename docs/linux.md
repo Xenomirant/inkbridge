@@ -116,4 +116,5 @@ release as the live system.
 | Pen without setup | — | ✅ pointer only (RemoteDesktop portal) |
 | Two-finger scroll | ✅ uinput hi-res wheel | ✅ uinput, or portal smooth scroll |
 | Pinch-zoom in apps | ✅ uinput touchscreen | ✅ uinput touchscreen, or portal touchscreen (no-setup path) |
+| Keyboard from the tablet | ✅ uinput keyboard (US-layout text) | ✅ uinput keyboard; no-setup path: not yet |
 | USB (tethering) | ✅ | ✅ |

@@ -46,8 +46,13 @@ USB tethering):**
     (tried: every 5 s, handing the connection to the accept loop, which replaces the Wi-Fi session),
     but the app only listens for that dial while connecting (`Session.acceptUsb`). Needs the app to
     keep its USB listener open during a Wi-Fi session; then the host part can go in.
-- Still to do: `--adb`, the desktop app, latency figures. The picture in portrait is upscaled
-  (900x1440 of the monitor onto 1200x1920); the extra screen will fix it.
+- `--adb` works: `adb reverse` set up by itself, the tablet connects over the cable (TCP), 36 ms.
+- VA-API hardware test (`cargo test -p ib-encode --features vaapi -- --ignored`) passes on the iGPU.
+- Keyboard from the tablet with the uinput option: a third virtual device ("Inkbridge Keyboard").
+  Keys and shortcuts work on any layout (letters at their US key, as on macOS); text covers the
+  US layout's characters, others are skipped (Linux injects keys, not characters).
+- Still to do: the desktop app; the keyboard on the no-setup portal path. The picture in portrait
+  is upscaled (900x1440 of the monitor onto 1200x1920); the extra screen will fix it.
 
 ## In progress — M4 macOS host
 Implemented on the MacBook (Apple silicon, macOS 27), tested with the TB331FC over Wi-Fi:
@@ -159,8 +164,8 @@ Still to do for M4:
 - **Keyboard from the tablet (protocol 0.3, Windows host):** a "Keys" button on the pad opens
   Android's keyboard (any language) and a row of extra keys: Esc, Tab, Win (tap: Start; hold: keep
   it pressed for Win+key), Ctrl/Alt/Shift (stay pressed for the next key), arrows, Del, Enter. A
-  hardware keyboard on the tablet works too. macOS since 2026-11-20 (below); Linux (uinput/portal)
-  still says "no keyboard": to do.
+  hardware keyboard on the tablet works too. macOS since 2026-11-20 (below); Linux with the uinput
+  option since 2026-11-20 (keys, shortcuts and US-layout text; the no-setup portal path: to do).
 - **The tablet as an extra screen on Windows (Advanced, one admin prompt):**
   `--install-virtual-display` installs the third-party Virtual Display Driver (MIT, signed by SignPath
   Foundation; pinned release and SHA-256, signature checked), rendering on the GPU of the main

@@ -9,6 +9,7 @@
 //!
 //! Finger gestures go to a second virtual device, a multitouch touchscreen
 //! (created on first use), so apps pinch-zoom natively as on a real one.
+//! A third, a keyboard, types for the tablet (see `linux_keys`).
 
 use evdev::uinput::VirtualDevice;
 use evdev::{
@@ -16,7 +17,7 @@ use evdev::{
     RelativeAxisCode, UinputAbsSetup,
 };
 use ib_geometry::{DesktopPoint, Region};
-use ib_protocol::{Buttons, PenFeatures, PenSample, Tool, TouchPhase};
+use ib_protocol::{Buttons, Key, Modifiers, PenFeatures, PenSample, Tool, TouchPhase};
 
 use crate::tracker::{PenTracker, Step};
 use crate::{InjectError, PenSink, TouchPoint};
@@ -40,6 +41,10 @@ pub struct UinputPenSink {
     wheel_rest: (f64, f64),
     touch: Option<VirtualDevice>,
     fingers: Fingers,
+    /// Created with the pen: events sent to a brand-new device are lost
+    /// until the desktop has opened it, which would drop the first key.
+    /// Or why there is none.
+    keyboard: Result<VirtualDevice, String>,
 }
 
 impl std::fmt::Debug for UinputPenSink {
@@ -107,6 +112,7 @@ impl UinputPenSink {
             wheel_rest: (0.0, 0.0),
             touch: None,
             fingers: Fingers::default(),
+            keyboard: keyboard_device().map_err(|e| e.to_string()),
         })
     }
 
@@ -217,6 +223,35 @@ impl UinputPenSink {
             self.touch = Some(dev);
         }
         Ok(self.touch.as_mut().expect("created above"))
+    }
+}
+
+/// The virtual keyboard for the tablet's typing.
+fn keyboard_device() -> Result<VirtualDevice, InjectError> {
+    let mut keys = AttributeSet::<KeyCode>::new();
+    for k in crate::linux_keys::all_keys() {
+        keys.insert(k);
+    }
+    VirtualDevice::builder()
+        .map_err(|e| unavailable(&e))?
+        .name("Inkbridge Keyboard")
+        .with_keys(&keys)
+        .and_then(evdev::uinput::VirtualDeviceBuilder::build)
+        .map_err(|e| unavailable(&e))
+}
+
+impl UinputPenSink {
+    /// Sends key strokes, one report each (apps see every press and release).
+    fn strokes(&mut self, strokes: &[crate::linux_keys::Stroke]) -> Result<(), InjectError> {
+        let kb = self
+            .keyboard
+            .as_mut()
+            .map_err(|e| InjectError::Unavailable(e.clone()))?;
+        for &(code, down) in strokes {
+            kb.emit(&[Self::key(code, down)])
+                .map_err(|e| InjectError::Rejected(e.to_string()))?;
+        }
+        Ok(())
     }
 }
 
@@ -366,6 +401,27 @@ impl PenSink for UinputPenSink {
         self.wheel_device()?
             .emit(&ev)
             .map_err(|e| InjectError::Rejected(e.to_string()))
+    }
+
+    fn keyboard(&self) -> bool {
+        self.keyboard.is_ok()
+    }
+
+    fn type_text(&mut self, text: &str) -> Result<(), InjectError> {
+        let (strokes, skipped) = crate::linux_keys::text_strokes(text);
+        self.strokes(&strokes)?;
+        if skipped > 0 {
+            return Err(InjectError::Rejected(format!(
+                "typing on Linux covers the characters of the US layout; {skipped} other character(s) skipped"
+            )));
+        }
+        Ok(())
+    }
+
+    fn key(&mut self, key: Key, modifiers: Modifiers) -> Result<(), InjectError> {
+        let strokes = crate::linux_keys::key_strokes(key, modifiers)
+            .ok_or_else(|| crate::linux_keys::unknown_key(key))?;
+        self.strokes(&strokes)
     }
 
     fn touch(&mut self, frame: &[TouchPoint]) -> Result<(), InjectError> {

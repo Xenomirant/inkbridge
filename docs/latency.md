@@ -15,6 +15,7 @@ Median with p95 in brackets. Add a row whenever something changes the path.
 | 2026-11-19 | Windows 11, RTX 5060 | Media Foundation (NVENC) | USB, `adb reverse` (TCP fallback) | 1920x1088 extra screen | 30 ms (53–57) | 4 ms | 2–3 ms | round trip 3 ms |
 | 2026-11-20 | Linux (live USB, GNOME Wayland), Intel iGPU | VA-API (`iHD`) | USB tethering (QUIC) | 2560x1440 → 1920x1080 | 49 ms (55–60) | 24 ms | 7 ms | CPU downscale took 17 ms of it; ~31 fps |
 | 2026-11-20 | Linux, same | VA-API (`iHD`) | USB tethering (QUIC) | 2560x1440 → 1920x1080 | 37–41 ms (43–45) | 13 ms | 7 ms | threaded downscale (2.4 ms); ~31 fps, see below |
+| 2026-11-20 | Linux, same | VA-API (`iHD`) | USB, `adb reverse` (TCP fallback) | 2560x1440 → 1920x1080 | 36 ms (42) | 15 ms | 4 ms | |
 | 2026-11-20 | Linux, same | VA-API (`iHD`) | Wi-Fi (campus, QUIC) | 2560x1440 → 1920x1080 | 36–37 ms (46–47) | 13–14 ms | 5 ms | |
 
 Still to measure: Windows over Wi-Fi (QUIC), the Intel iGPU on Windows.
