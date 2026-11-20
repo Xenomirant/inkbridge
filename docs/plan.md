@@ -93,6 +93,16 @@ Dependency rule: `apps → ib-host → backends → session/transport → protoc
 - Recognisers: Windows Ink (strokes passed to the host), iPadOS `PKStrokeRecognizer`; bundled tract models: Zinnia/Tegaki (zh character mode) + our own LSTM-CTC line model (en/ru/zh) trained on IAM-OnDB/CASIA/synthetic Cyrillic (weights under a separate non-commercial-compatible licence, documented); n-gram re-ranking + user dictionary; optional math via a CoMER-style ONNX model.
 - Text delivered through the host's keyboard injection path.
 
+**Distribution (decided 2026-11-20):** GitHub only for now — builds attached to GitHub Releases, no
+app stores, F-Droid, notarisation or paid developer programmes yet. The store and signing items below
+wait until that changes. The iPad app is installed from Xcode meanwhile (free provisioning: the
+install must be renewed every 7 days).
+
+**Order after M4 (2026-11-20):** finish Linux (M3: validate on a real desktop, plus the keyboard,
+display choice and extra screen the other hosts have) → GitHub alpha builds from CI for testing on
+other hardware (installers that need no admin rights, macOS permission guide, troubleshooting notes,
+a security review) → iPad (M4) → handwriting (M5) → the rest of M6.
+
 **M6 — Release**
 - Windows per-user installer (no UAC, MSIX/NSIS per-user) + portable zip; macOS notarised dmg (signing costs to decide); Linux AppImage + Flatpak; Android APK on GitHub/Gitee Releases + F-Droid; Google developer verification registration (required for sideloading on certified devices from 2027 — one-time fee); auto-update check (no telemetry). Docs site, user guide, troubleshooting (firewall prompt, campus Wi-Fi isolation, tethering).
 
