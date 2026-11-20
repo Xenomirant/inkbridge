@@ -105,6 +105,9 @@ struct PenThread {
     scroll: ScrollEngine,
     /// A two-finger scroll is in progress (between first message and `end`).
     scrolling: bool,
+    /// Scroll events were injected and the sink hasn't been told the
+    /// gesture ended (fingers up and inertia over).
+    scroll_open: bool,
 }
 
 impl PenThread {
@@ -122,6 +125,7 @@ impl PenThread {
             },
             scroll: ScrollEngine::new(),
             scrolling: false,
+            scroll_open: false,
         }
     }
 
@@ -198,6 +202,7 @@ impl PenThread {
         if self.scroll.is_flinging() {
             let (dx, dy) = self.scroll.tick(ib_clock::now_us());
             self.inject_scroll(dx, dy);
+            self.finish_scroll_if_over();
         }
         if let Some(frame) = self.touch.keep_alive() {
             let frame = frame.to_vec();
@@ -208,6 +213,7 @@ impl PenThread {
     fn pen(&mut self, s: PenSample) {
         if s.state == ib_protocol::PenState::Contact {
             self.scroll.stop(); // writing stops any inertia at once
+            self.finish_scroll_if_over();
         }
         self.pointer = emit(&mut self.sink, s, self.region);
     }
@@ -242,14 +248,28 @@ impl PenThread {
         if end {
             self.scrolling = false;
             self.scroll.on_end(t_us, ib_clock::now_us());
+            self.finish_scroll_if_over();
         }
     }
 
     fn inject_scroll(&mut self, dx: f64, dy: f64) {
-        if (dx != 0.0 || dy != 0.0)
-            && let Err(e) = self.sink.scroll(dx, dy)
-        {
-            tracing::debug!("{e}");
+        if dx == 0.0 && dy == 0.0 {
+            return;
+        }
+        match self.sink.scroll(dx, dy) {
+            Ok(()) => self.scroll_open = true,
+            Err(e) => tracing::debug!("{e}"),
+        }
+    }
+
+    /// Tells the sink the scroll gesture ended, once the fingers are up and
+    /// inertia has stopped.
+    fn finish_scroll_if_over(&mut self) {
+        if self.scroll_open && !self.scrolling && !self.scroll.is_flinging() {
+            self.scroll_open = false;
+            if let Err(e) = self.sink.scroll_end() {
+                tracing::debug!("{e}");
+            }
         }
     }
 
@@ -266,6 +286,7 @@ impl PenThread {
         }
         self.scroll.stop();
         self.scrolling = false;
+        self.finish_scroll_if_over();
     }
 }
 
@@ -317,6 +338,9 @@ mod tests {
         }
         fn scroll(&mut self, dx: f64, dy: f64) -> Result<(), InjectError> {
             self.0.lock().unwrap().scroll(dx, dy)
+        }
+        fn scroll_end(&mut self) -> Result<(), InjectError> {
+            self.0.lock().unwrap().scroll_end()
         }
         fn move_pointer(&mut self, at: ib_geometry::DesktopPoint) -> Result<(), InjectError> {
             self.0.lock().unwrap().move_pointer(at)
@@ -377,6 +401,83 @@ mod tests {
             fake.scrolls.iter().all(|s| s.1 >= 0.0 && s.0 == 0.0),
             "direction preserved"
         );
+        assert_eq!(
+            fake.scroll_ends, 0,
+            "still coasting: the gesture isn't over"
+        );
+    }
+
+    /// Runs `inputs` through a pen thread with a fake sink; returns the fake.
+    fn run_inputs(inputs: Vec<PenInput>) -> FakePenSink {
+        let fake = Arc::new(Mutex::new(FakePenSink::default()));
+        let f2 = fake.clone();
+        let region = Region {
+            x: 0,
+            y: 0,
+            width: 1000,
+            height: 1000,
+        };
+        let (tx, h) = spawn(
+            Box::new(move || Ok(Box::new(Shared(f2)) as Box<dyn PenSink>)),
+            region,
+        )
+        .unwrap();
+        for i in inputs {
+            tx.send(i).unwrap();
+        }
+        tx.send(PenInput::Shutdown).unwrap();
+        h.join().unwrap();
+        std::mem::take(&mut *fake.lock().unwrap())
+    }
+
+    fn scroll(dy: f32, t_us: u64, end: bool) -> PenInput {
+        PenInput::Scroll {
+            x: 0.5,
+            y: 0.5,
+            dx: 0.0,
+            dy,
+            t_us,
+            end,
+        }
+    }
+
+    #[test]
+    fn a_scroll_that_stops_before_lifting_ends_at_once() {
+        let fake = run_inputs(vec![
+            scroll(0.01, 8_000, false),
+            scroll(0.01, 16_000, false),
+            // Fingers rest 200 ms, then lift: no inertia.
+            scroll(0.0, 216_000, true),
+        ]);
+        assert_eq!(
+            fake.scrolls.len(),
+            2,
+            "the two movements scroll; the lift adds none"
+        );
+        assert_eq!(fake.scroll_ends, 1);
+    }
+
+    #[test]
+    fn the_pen_ends_a_coasting_scroll() {
+        let mut inputs: Vec<PenInput> = (1..=8u64)
+            .map(|i| scroll(0.01, i * 8_000, i == 8))
+            .collect();
+        inputs.push(PenInput::Transition(PenSample {
+            t_us: 100_000,
+            x: 0.5,
+            y: 0.5,
+            pressure: 0.5,
+            state: PenState::Contact,
+            ..Default::default()
+        }));
+        let fake = run_inputs(inputs);
+        assert_eq!(fake.scroll_ends, 1);
+    }
+
+    #[test]
+    fn no_scroll_no_end() {
+        let fake = run_inputs(vec![PenInput::Disconnected]);
+        assert_eq!(fake.scroll_ends, 0);
     }
 
     #[test]

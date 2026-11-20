@@ -1,17 +1,21 @@
 //! Linux Wayland pointer fallback through the RemoteDesktop portal: no root
 //! or setup needed, but **no pressure or tilt** (the pen acts as a mouse:
 //! hover moves, contact holds the left button). Used when uinput access
-//! (the Advanced option) isn't granted.
+//! (the Advanced option) isn't granted. Finger gestures go through the
+//! portal's touchscreen, when the desktop grants it, so apps pinch-zoom
+//! natively.
 //!
 //! A future libei backend can add real stylus events once compositors
 //! support libei's tablet interface.
 
+use std::collections::HashMap;
+
 use ib_geometry::DesktopPoint;
 use ib_portal::{BTN_LEFT, Pointer};
-use ib_protocol::{PenFeatures, PenSample, PenState};
+use ib_protocol::{PenFeatures, PenSample, PenState, TouchPhase};
 
 use crate::tracker::PenTracker;
-use crate::{InjectError, PenSink};
+use crate::{InjectError, PenSink, TouchPoint};
 
 pub struct PortalPointerSink {
     pointer: Pointer,
@@ -19,6 +23,8 @@ pub struct PortalPointerSink {
     scale: f64,
     tracker: PenTracker,
     pressed: bool,
+    /// Fingers down, by id, at their last sent logical position.
+    fingers: HashMap<u8, (f64, f64)>,
 }
 
 impl std::fmt::Debug for PortalPointerSink {
@@ -42,6 +48,7 @@ impl PortalPointerSink {
             scale: if scale > 0.0 { scale } else { 1.0 },
             tracker: PenTracker::new(),
             pressed: false,
+            fingers: HashMap::new(),
         }
     }
 
@@ -107,9 +114,56 @@ impl PenSink for PortalPointerSink {
             .ok_or_else(gone)
     }
 
+    fn touch(&mut self, frame: &[TouchPoint]) -> Result<(), InjectError> {
+        if !self.pointer.has_touch() {
+            return Err(InjectError::Unavailable(
+                "the desktop didn't grant touch control".into(),
+            ));
+        }
+        for t in frame {
+            let slot = u32::from(t.id);
+            let (x, y) = self.logical(t.at);
+            let sent = match (t.phase, self.fingers.get(&t.id).copied()) {
+                (TouchPhase::Down | TouchPhase::Move, None) => {
+                    self.fingers.insert(t.id, (x, y));
+                    self.pointer.touch_down(slot, x, y)
+                }
+                // Keep-alive frames repeat resting fingers; the portal needs
+                // nothing while they don't move.
+                (TouchPhase::Down | TouchPhase::Move, Some(last)) if last == (x, y) => true,
+                (TouchPhase::Down | TouchPhase::Move, Some(_)) => {
+                    self.fingers.insert(t.id, (x, y));
+                    self.pointer.touch_motion(slot, x, y)
+                }
+                // The portal has no cancel; lifting is the closest.
+                (TouchPhase::Up | TouchPhase::Cancel, Some(_)) => {
+                    self.fingers.remove(&t.id);
+                    self.pointer.touch_up(slot)
+                }
+                (TouchPhase::Up | TouchPhase::Cancel, None) => true,
+            };
+            if !sent {
+                return Err(gone());
+            }
+        }
+        Ok(())
+    }
+
+    fn scroll_end(&mut self) -> Result<(), InjectError> {
+        self.pointer
+            .axis(0.0, 0.0, true)
+            .then_some(())
+            .ok_or_else(gone)
+    }
+
     fn release(&mut self) -> Result<(), InjectError> {
         let _ = self.tracker.step(PenState::OutOfRange);
-        self.button(false)
+        let mut lifted = true;
+        for (id, _) in self.fingers.drain() {
+            lifted &= self.pointer.touch_up(u32::from(id));
+        }
+        self.button(false)?;
+        lifted.then_some(()).ok_or_else(gone)
     }
 }
 
@@ -192,6 +246,83 @@ mod tests {
                 dx: -0.0,
                 dy: -30.0,
                 finish: false
+            }]
+        );
+    }
+
+    fn finger(id: u8, x: f64, y: f64, phase: TouchPhase) -> TouchPoint {
+        TouchPoint {
+            id,
+            at: DesktopPoint { x, y },
+            phase,
+        }
+    }
+
+    #[test]
+    fn a_pinch_becomes_portal_touches() {
+        let (p, mut rx) = ib_portal::Pointer::detached();
+        let mut sink = PortalPointerSink::new(p, 0.5);
+        sink.touch(&[
+            finger(0, 100.0, 100.0, TouchPhase::Down),
+            finger(1, 200.0, 100.0, TouchPhase::Down),
+        ])
+        .unwrap();
+        sink.touch(&[
+            finger(0, 80.0, 100.0, TouchPhase::Move),
+            finger(1, 200.0, 100.0, TouchPhase::Move), // didn't move
+        ])
+        .unwrap();
+        sink.touch(&[
+            finger(0, 80.0, 100.0, TouchPhase::Up),
+            finger(1, 200.0, 100.0, TouchPhase::Cancel),
+        ])
+        .unwrap();
+        assert_eq!(
+            drain(&mut rx),
+            vec![
+                PointerCmd::TouchDown {
+                    slot: 0,
+                    x: 50.0,
+                    y: 50.0
+                },
+                PointerCmd::TouchDown {
+                    slot: 1,
+                    x: 100.0,
+                    y: 50.0
+                },
+                PointerCmd::TouchMotion {
+                    slot: 0,
+                    x: 40.0,
+                    y: 50.0
+                },
+                PointerCmd::TouchUp { slot: 0 },
+                PointerCmd::TouchUp { slot: 1 },
+            ]
+        );
+    }
+
+    #[test]
+    fn release_lifts_resting_fingers() {
+        let (p, mut rx) = ib_portal::Pointer::detached();
+        let mut sink = PortalPointerSink::new(p, 1.0);
+        sink.touch(&[finger(3, 10.0, 10.0, TouchPhase::Down)])
+            .unwrap();
+        drain(&mut rx);
+        sink.release().unwrap();
+        assert_eq!(drain(&mut rx), vec![PointerCmd::TouchUp { slot: 3 }]);
+    }
+
+    #[test]
+    fn scroll_end_finishes_the_portal_gesture() {
+        let (p, mut rx) = ib_portal::Pointer::detached();
+        let mut sink = PortalPointerSink::new(p, 1.0);
+        sink.scroll_end().unwrap();
+        assert_eq!(
+            drain(&mut rx),
+            vec![PointerCmd::Axis {
+                dx: 0.0,
+                dy: 0.0,
+                finish: true
             }]
         );
     }

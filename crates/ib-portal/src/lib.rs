@@ -17,11 +17,12 @@
 #![cfg(target_os = "linux")]
 
 use std::os::fd::OwnedFd;
-use std::sync::mpsc;
+use std::sync::{Mutex, OnceLock, mpsc};
 
 use ashpd::desktop::remote_desktop::{
     DeviceType, NotifyPointerAxisOptions, NotifyPointerButtonOptions,
-    NotifyPointerMotionAbsoluteOptions, RemoteDesktop, SelectDevicesOptions, StartOptions,
+    NotifyPointerMotionAbsoluteOptions, NotifyTouchDownOptions, NotifyTouchMotionOptions,
+    NotifyTouchUpOptions, RemoteDesktop, SelectDevicesOptions, StartOptions,
 };
 use ashpd::desktop::screencast::{
     CursorMode, OpenPipeWireRemoteOptions, Screencast, SelectSourcesOptions, SourceType,
@@ -79,22 +80,66 @@ pub struct Grant {
     pub restore_token: Option<String>,
     /// Present when pointer control was requested and granted.
     pub pointer: Option<Pointer>,
+    /// The desktop offers touch control, whether or not it was granted (a
+    /// restored grant keeps the devices it was first given).
+    pub touch_offered: bool,
     session: SessionThread,
+}
+
+impl Grant {
+    /// Ends the portal session and waits until the desktop has closed it.
+    /// Dropping the grant also ends it, without waiting; a new request made
+    /// right after a drop can be refused while the old session closes.
+    pub fn close(mut self) {
+        if let Some(stop) = self.session.stop.take() {
+            let _ = stop.send(());
+        }
+        if let Some(done) = self.session.done.take() {
+            // Returns once the task has ended (the sender is dropped).
+            let _ = done.into_inner().map(|rx| rx.recv());
+        }
+    }
 }
 
 /// One queued pointer event.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum PointerCmd {
-    MoveTo { x: f64, y: f64 },
-    Button { code: i32, pressed: bool },
-    Axis { dx: f64, dy: f64, finish: bool },
+    MoveTo {
+        x: f64,
+        y: f64,
+    },
+    Button {
+        code: i32,
+        pressed: bool,
+    },
+    Axis {
+        dx: f64,
+        dy: f64,
+        finish: bool,
+    },
+    /// Touch points (`slot` = finger), in the stream's logical coordinates.
+    TouchDown {
+        slot: u32,
+        x: f64,
+        y: f64,
+    },
+    TouchMotion {
+        slot: u32,
+        x: f64,
+        y: f64,
+    },
+    TouchUp {
+        slot: u32,
+    },
 }
 
-/// Moves and clicks the desktop pointer through the portal. Cheap to clone;
+/// Moves and clicks the desktop pointer (and touches, if granted) through
+/// the portal. Cheap to clone;
 /// calls queue the event and return immediately.
 #[derive(Debug, Clone)]
 pub struct Pointer {
     tx: amp::UnboundedSender<PointerCmd>,
+    touch: bool,
 }
 
 impl Pointer {
@@ -102,7 +147,13 @@ impl Pointer {
     /// receiver instead (tests, diagnostics).
     pub fn detached() -> (Self, amp::UnboundedReceiver<PointerCmd>) {
         let (tx, rx) = amp::unbounded_channel();
-        (Self { tx }, rx)
+        (Self { tx, touch: true }, rx)
+    }
+
+    /// Whether the desktop granted touch control too (older portals and
+    /// desktops may grant only the pointer).
+    pub fn has_touch(&self) -> bool {
+        self.touch
     }
 
     /// Absolute move, in the stream's logical coordinates (0,0 = the
@@ -121,12 +172,29 @@ impl Pointer {
     pub fn axis(&self, dx: f64, dy: f64, finish: bool) -> bool {
         self.tx.send(PointerCmd::Axis { dx, dy, finish }).is_ok()
     }
+
+    /// Puts finger `slot` down at a logical position.
+    pub fn touch_down(&self, slot: u32, x: f64, y: f64) -> bool {
+        self.tx.send(PointerCmd::TouchDown { slot, x, y }).is_ok()
+    }
+
+    /// Moves a finger that is down.
+    pub fn touch_motion(&self, slot: u32, x: f64, y: f64) -> bool {
+        self.tx.send(PointerCmd::TouchMotion { slot, x, y }).is_ok()
+    }
+
+    /// Lifts a finger.
+    pub fn touch_up(&self, slot: u32) -> bool {
+        self.tx.send(PointerCmd::TouchUp { slot }).is_ok()
+    }
 }
 
-/// Owns the portal thread; dropping it closes the session.
+/// Owns the portal session task; dropping it closes the session.
 #[derive(Debug)]
 struct SessionThread {
     stop: Option<tokio::sync::oneshot::Sender<()>>,
+    /// Disconnects when the session task has ended.
+    done: Option<Mutex<mpsc::Receiver<()>>>,
 }
 
 impl Drop for SessionThread {
@@ -143,27 +211,53 @@ impl Drop for SessionThread {
 pub fn request(req: Request) -> Result<(Stream, Grant), PortalError> {
     let (reply_tx, reply_rx) = mpsc::sync_channel(1);
     let (stop_tx, stop_rx) = tokio::sync::oneshot::channel();
+    // Dropped when the session task ends: `Grant::close` waits for that.
+    let (done_tx, done_rx) = mpsc::channel::<()>();
+    runtime()?.spawn(async move {
+        let _done = done_tx;
+        run(req, reply_tx, stop_rx).await;
+    });
+    let (stream, mut grant) = reply_rx
+        .recv()
+        .map_err(|_| PortalError::Unavailable("portal task ended".into()))??;
+    grant.session.stop = Some(stop_tx);
+    grant.session.done = Some(Mutex::new(done_rx));
+    Ok((stream, grant))
+}
+
+/// One runtime for every portal call, kept for the life of the process:
+/// ashpd caches its D-Bus connection process-wide, and that connection
+/// stops working once the runtime it was created on shuts down (a second
+/// request then waits forever). A dedicated thread drives it.
+fn runtime() -> Result<&'static tokio::runtime::Handle, PortalError> {
+    static RUNTIME: OnceLock<tokio::runtime::Handle> = OnceLock::new();
+    if let Some(h) = RUNTIME.get() {
+        return Ok(h);
+    }
+    let (tx, rx) = mpsc::sync_channel(1);
     std::thread::Builder::new()
         .name("inkbridge-portal".into())
         .spawn(move || {
-            let rt = match tokio::runtime::Builder::new_current_thread()
+            match tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
             {
-                Ok(rt) => rt,
-                Err(e) => {
-                    let _ = reply_tx.send(Err(PortalError::Unavailable(e.to_string())));
-                    return;
+                Ok(rt) => {
+                    let _ = tx.send(Ok(rt.handle().clone()));
+                    rt.block_on(std::future::pending::<()>());
                 }
-            };
-            rt.block_on(run(req, reply_tx, stop_rx));
+                Err(e) => {
+                    let _ = tx.send(Err(PortalError::Unavailable(e.to_string())));
+                }
+            }
         })
         .map_err(|e| PortalError::Unavailable(e.to_string()))?;
-    let (stream, mut grant) = reply_rx
+    let handle = rx
         .recv()
         .map_err(|_| PortalError::Unavailable("portal thread ended".into()))??;
-    grant.session.stop = Some(stop_tx);
-    Ok((stream, grant))
+    // Two first calls at once would each start a thread; one handle wins
+    // and the other runtime just idles.
+    Ok(RUNTIME.get_or_init(|| handle))
 }
 
 type Reply = mpsc::SyncSender<Result<(Stream, Grant), PortalError>>;
@@ -249,7 +343,11 @@ async fn start_cast(req: &Request) -> Result<((Stream, Grant), Session<Screencas
     let grant = Grant {
         restore_token: started.restore_token().map(str::to_owned),
         pointer: None,
-        session: SessionThread { stop: None },
+        touch_offered: false,
+        session: SessionThread {
+            stop: None,
+            done: None,
+        },
     };
     let stream = Stream {
         fd,
@@ -274,12 +372,20 @@ async fn start_remote(req: &Request) -> Result<RemoteStart, PortalError> {
         .create_session(CreateSessionOptions::default())
         .await
         .map_err(portal_err)?;
+    // Touch too where the desktop offers it (pinch-zoom in apps); asking
+    // for a type it lacks could fail the whole request.
+    let touch = remote
+        .available_device_types()
+        .await
+        .unwrap_or(DeviceType::POINTER)
+        & DeviceType::TOUCHSCREEN;
+    let devices = DeviceType::POINTER | touch;
     // On a combined session the persist mode/token belong to SelectDevices.
     remote
         .select_devices(
             &session,
             SelectDevicesOptions::default()
-                .set_devices(DeviceType::POINTER)
+                .set_devices(devices)
                 .set_persist_mode(PersistMode::ExplicitlyRevoked)
                 .set_restore_token(req.restore_token.as_deref()),
         )
@@ -316,8 +422,15 @@ async fn start_remote(req: &Request) -> Result<RemoteStart, PortalError> {
         },
         Grant {
             restore_token: started.restore_token().map(str::to_owned),
-            pointer: Some(Pointer { tx }),
-            session: SessionThread { stop: None },
+            pointer: Some(Pointer {
+                tx,
+                touch: started.devices().contains(DeviceType::TOUCHSCREEN),
+            }),
+            touch_offered: !touch.is_empty(),
+            session: SessionThread {
+                stop: None,
+                done: None,
+            },
         },
     );
     Ok((share, remote, session, rx))
@@ -368,11 +481,33 @@ async fn pump(
                     )
                     .await
             }
+            PointerCmd::TouchDown { slot, x, y } => {
+                remote
+                    .notify_touch_down(session, node, slot, x, y, NotifyTouchDownOptions::default())
+                    .await
+            }
+            PointerCmd::TouchMotion { slot, x, y } => {
+                remote
+                    .notify_touch_motion(
+                        session,
+                        node,
+                        slot,
+                        x,
+                        y,
+                        NotifyTouchMotionOptions::default(),
+                    )
+                    .await
+            }
+            PointerCmd::TouchUp { slot } => {
+                remote
+                    .notify_touch_up(session, slot, NotifyTouchUpOptions::default())
+                    .await
+            }
         };
         if let Err(e) = r
             && !std::mem::replace(&mut warned, true)
         {
-            tracing::warn!("portal rejected a pointer event: {e}");
+            tracing::warn!("portal rejected a pointer or touch event: {e}");
         }
     }
 }

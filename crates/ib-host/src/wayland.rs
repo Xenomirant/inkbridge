@@ -40,6 +40,41 @@ fn token_path(dir: &Path, pointer: bool) -> PathBuf {
     })
 }
 
+/// Written when the desktop was asked for touch and didn't grant it, so it
+/// isn't asked on every start.
+const NO_TOUCH_MARKER: &str = "wayland-no-touch";
+
+/// Touch control in a remote-desktop grant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Touch {
+    Granted,
+    /// The desktop offers it, but this grant doesn't include it.
+    Missing,
+    /// The desktop (or its portal) has no touch control.
+    Unavailable,
+}
+
+impl Touch {
+    fn of(grant: &ib_portal::Grant) -> Self {
+        if grant
+            .pointer
+            .as_ref()
+            .is_some_and(ib_portal::Pointer::has_touch)
+        {
+            Self::Granted
+        } else if grant.touch_offered {
+            Self::Missing
+        } else {
+            Self::Unavailable
+        }
+    }
+}
+
+/// Whether to drop a restored grant and show the dialog again for touch.
+fn ask_again_for_touch(restored: bool, touch: Touch, declined_before: bool) -> bool {
+    restored && touch == Touch::Missing && !declined_before
+}
+
 /// Asks the desktop for the screen (and pointer control if `pointer`),
 /// reusing and refreshing the saved restore token. Shows the desktop's
 /// dialog the first time.
@@ -54,10 +89,30 @@ pub fn connect(dir: &Path, pointer: bool) -> anyhow::Result<&'static WaylandDesk
     if saved.is_none() {
         println!("Your desktop will ask to share the screen with Inkbridge (only this once).");
     }
-    let (stream, grant) = ib_portal::request(ib_portal::Request {
+    let restored = saved.is_some();
+    let (mut stream, mut grant) = ib_portal::request(ib_portal::Request {
         restore_token: saved,
         pointer,
     })?;
+    let declined = dir.join(NO_TOUCH_MARKER);
+    if ask_again_for_touch(restored, Touch::of(&grant), declined.exists()) {
+        // A permission saved before touch support covers only the pointer:
+        // ask once more so finger gestures (pinch-zoom) reach apps.
+        println!("Your desktop will ask again, now also for touch control (only this once).");
+        drop(stream);
+        grant.close();
+        (stream, grant) = ib_portal::request(ib_portal::Request {
+            restore_token: None,
+            pointer,
+        })?;
+        if Touch::of(&grant) != Touch::Granted {
+            std::fs::create_dir_all(dir)?;
+            std::fs::write(&declined, "")?;
+        }
+    }
+    if pointer {
+        tracing::info!(touch = ?Touch::of(&grant), "desktop remote control granted");
+    }
     if let Some(t) = &grant.restore_token {
         std::fs::create_dir_all(dir)?;
         std::fs::write(&path, t)?;
@@ -90,5 +145,31 @@ impl WaylandDesktop {
             pointer,
             self.capture.logical_scale(),
         )))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Touch, ask_again_for_touch};
+
+    #[test]
+    fn asks_again_only_for_an_old_grant_without_touch() {
+        assert!(ask_again_for_touch(true, Touch::Missing, false));
+        assert!(
+            !ask_again_for_touch(false, Touch::Missing, false),
+            "just asked"
+        );
+        assert!(
+            !ask_again_for_touch(true, Touch::Granted, false),
+            "has touch"
+        );
+        assert!(
+            !ask_again_for_touch(true, Touch::Unavailable, false),
+            "not offered"
+        );
+        assert!(
+            !ask_again_for_touch(true, Touch::Missing, true),
+            "declined before"
+        );
     }
 }

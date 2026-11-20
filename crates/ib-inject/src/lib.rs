@@ -111,6 +111,13 @@ pub trait PenSink: Send {
         ))
     }
 
+    /// The scroll gesture is over: the fingers lifted and any inertia has
+    /// stopped. Backends whose OS models scrolls as gestures (the Wayland
+    /// portal's `finish`) end it here; the rest ignore it.
+    fn scroll_end(&mut self) -> Result<(), InjectError> {
+        Ok(())
+    }
+
     /// Puts the pen on another display (an id from the capture backend's
     /// display list, with its size in pixels): desktop positions are
     /// relative to it from now on. Backends that address the whole desktop
@@ -154,6 +161,8 @@ pub struct FakePenSink {
     pub events: Vec<(PenSample, DesktopPoint)>,
     pub touch_frames: Vec<Vec<TouchPoint>>,
     pub scrolls: Vec<(f64, f64)>,
+    /// Number of [`PenSink::scroll_end`] calls.
+    pub scroll_ends: usize,
     pub pointer_moves: Vec<DesktopPoint>,
     pub typed: Vec<String>,
     pub keys: Vec<(Key, Modifiers)>,
@@ -188,6 +197,11 @@ impl PenSink for FakePenSink {
 
     fn scroll(&mut self, dx_px: f64, dy_px: f64) -> Result<(), InjectError> {
         self.scrolls.push((dx_px, dy_px));
+        Ok(())
+    }
+
+    fn scroll_end(&mut self) -> Result<(), InjectError> {
+        self.scroll_ends += 1;
         Ok(())
     }
 
