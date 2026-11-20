@@ -13,8 +13,19 @@ Median with p95 in brackets. Add a row whenever something changes the path.
 | 2026-11-18 | MacBook, extra screen | VideoToolbox | Wi-Fi (campus) | 1920x1088 / 1740x1088 | 32–40 ms | — | — | |
 | 2026-11-20 | MacBook | VideoToolbox | USB, `adb reverse` (TCP fallback) | 1680x1088 | 33–35 ms (44–53) | 13–14 ms incl. capture wait | 2 ms | desktop app, 38–50 fps |
 | 2026-11-19 | Windows 11, RTX 5060 | Media Foundation (NVENC) | USB, `adb reverse` (TCP fallback) | 1920x1088 extra screen | 30 ms (53–57) | 4 ms | 2–3 ms | round trip 3 ms |
+| 2026-11-20 | Linux (live USB, GNOME Wayland), Intel iGPU | VA-API (`iHD`) | USB tethering (QUIC) | 2560x1440 → 1920x1080 | 49 ms (55–60) | 24 ms | 7 ms | CPU downscale took 17 ms of it; ~31 fps |
+| 2026-11-20 | Linux, same | VA-API (`iHD`) | USB tethering (QUIC) | 2560x1440 → 1920x1080 | 37–41 ms (43–45) | 13 ms | 7 ms | threaded downscale (2.4 ms); ~31 fps, see below |
+| 2026-11-20 | Linux, same | VA-API (`iHD`) | Wi-Fi (campus, QUIC) | 2560x1440 → 1920x1080 | 36–37 ms (46–47) | 13–14 ms | 5 ms | |
 
-Still to measure: Windows over Wi-Fi (QUIC), the Intel iGPU, a Linux host.
+Still to measure: Windows over Wi-Fi (QUIC), the Intel iGPU on Windows.
+
+**Linux capture rate:** in the live-USB session GNOME negotiated 59.95 fps (the monitor's rate) and
+drew at 60 fps (`glxgears`), but the screen cast delivered about 31 fps, with Firefox and with a
+60 fps GStreamer pattern alike. The monitor hangs off the RTX 5060, which runs Mesa's NVK there (GL
+through zink); the screen cast copies each frame from the GPU into memory, which seems to be the
+limit. Measure again on an installed system (NVIDIA driver, or the monitor on the Intel GPU) and
+consider DMA-BUF capture. Asking PipeWire for a maximum frame rate changed nothing (GNOME offers
+the monitor's rate anyway).
 
 **Other video work on the computer** competes for the same hardware encoder. On the MacBook, two
 hardware video conversions (ffmpeg, VideoToolbox) running at the same time doubled the screen

@@ -331,11 +331,13 @@ fn run(
                 return;
             }
             let size = info.size();
+            let max = info.max_framerate();
+            let fps = f64::from(max.num) / f64::from(max.denom.max(1));
             tracing::info!(
-                "screen cast: {}x{} {:?}",
+                "screen cast: {}x{} {:?}, up to {fps:.2} fps",
                 size.width,
                 size.height,
-                info.format()
+                info.format(),
             );
             let (m, cv) = &*fmt_slot;
             m.lock().unwrap_or_else(PoisonError::into_inner).size = Some((size.width, size.height));
