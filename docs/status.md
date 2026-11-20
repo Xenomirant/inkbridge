@@ -77,7 +77,7 @@ Implemented on the MacBook (Apple silicon, macOS 27), tested with the TB331FC ov
   display offers only the chosen mode: macOS keeps the current mode when the list changes, so the
   size is chosen on the tablet, not in System Settings. Checked with both ignored tests. About 32-40 ms capture-to-screen over Wi-Fi in both. Checked with the ignored
   tests `an_extra_display_appears_and_goes_away` and `the_tablet_becomes_an_extra_screen`, and on
-  the tablet. Not yet checked: a pen stroke on it.
+  the tablet. On 2026-11-20 the user drew on it in several apps (Krita, Rnote) and reports it working.
 - **USB:** the TB331FC tethers RNDIS-only, which macOS doesn't support, so the Mac uses `--adb`
   (or "USB without tethering" in the desktop app): `adb reverse` and the TCP fallback. Checked on
   2026-11-20 with the desktop app: the tablet connects over the cable by itself (`transport=Usb`,
