@@ -23,40 +23,30 @@ use crate::CaptureError;
 const PIXELS_PER_MM: f64 = 8.3;
 const REFRESH_HZ: f64 = 60.0;
 
-/// The sizes in points a virtual display offers for a tablet area of
-/// `width × height` pixels that is sent a `picture` of the display (in
-/// pixels; smaller when the tablet's decoder can't take the whole area).
-///
-/// The first is the default. Normally that is two thirds of the area,
-/// drawn at 2x, which leaves room for windows; then half the picture at
-/// 2x, half the area at 2x, and the picture and the area at 1x.
-///
-/// `sharp` is for an area the tablet shows pixel for pixel (the caller
-/// passes an area no larger than the picture): half the area at 2x, so
-/// nothing is scaled anywhere, then the area at 1x. The others can be
-/// chosen in System Settings.
-pub fn virtual_modes(width: u32, height: u32, picture: (u32, u32), sharp: bool) -> Vec<(u32, u32)> {
-    let even = |v: u32| (v.max(2) / 2) * 2;
-    let half = (even(width / 2), even(height / 2));
-    let full = (even(width), even(height));
-    let candidates = if sharp {
-        vec![half, full]
-    } else {
-        vec![
-            (even(width * 2 / 3), even(height * 2 / 3)),
-            (even(picture.0 / 2), even(picture.1 / 2)),
-            half,
-            (even(picture.0), even(picture.1)),
-            full,
-        ]
+/// Size steps of a virtual display, as tablet pixels per point: from
+/// "larger text" (2.0: every point is 2x2 pixels of the tablet's area,
+/// pixel for pixel when the area is what the decoder takes) to "more
+/// space" (1.0). Every step is drawn at 2x and scaled into the picture,
+/// as a Mac scales its own Retina screen.
+pub const SIZE_STEPS: [f64; 6] = [2.0, 1.75, 1.5, 4.0 / 3.0, 1.2, 1.0];
+
+/// The display's size in points at size step `step` for a tablet area of
+/// `width × height` pixels (even sides).
+pub fn points_at(width: u32, height: u32, step: usize) -> (u32, u32) {
+    let per_point = SIZE_STEPS[step.min(SIZE_STEPS.len() - 1)];
+    let even = |v: u32| {
+        let p = (f64::from(v) / per_point) as u32;
+        (p.max(2) / 2) * 2
     };
-    let mut modes = Vec::new();
-    for mode in candidates {
-        if !modes.contains(&mode) {
-            modes.push(mode);
-        }
-    }
-    modes
+    (even(width), even(height))
+}
+
+/// The modes a virtual display offers: only the one at `step`. With more
+/// modes, macOS keeps whichever is current when the list changes, so a new
+/// step would not take effect; the size is chosen on the tablet instead
+/// of in System Settings.
+pub fn virtual_modes(width: u32, height: u32, step: usize) -> Vec<(u32, u32)> {
+    vec![points_at(width, height, step.min(SIZE_STEPS.len() - 1))]
 }
 
 /// Live virtual displays: id and the widest picture each can hold.
@@ -66,10 +56,10 @@ static LIVE: Mutex<Vec<(u32, u32)>> = Mutex::new(Vec::new());
 /// points wide, or `None` for any other display.
 ///
 /// The display's modes are drawn at 2x wherever that fits its pixel
-/// limit, which [`MacVirtualDisplay::new`] sets so that only the
-/// full-size mode doesn't fit. (Each mode also exists at 1x, hidden in
-/// System Settings unless all resolutions are shown; choosing one of
-/// those would make the picture and the pen disagree.)
+/// limit, which [`MacVirtualDisplay::new`] sets so that every size step
+/// fits. (Each mode also exists at 1x, hidden in System Settings unless
+/// all resolutions are shown; choosing one of those would make the picture
+/// and the pen disagree.)
 pub(crate) fn scale_of(id: u32, points_wide: f64) -> Option<f64> {
     let live = LIVE
         .lock()
@@ -90,7 +80,7 @@ fn scale_within(points_wide: f64, max_pixels: u32) -> f64 {
 pub struct MacVirtualDisplay {
     display: Retained<AnyObject>,
     size: (u32, u32),
-    picture: (u32, u32),
+    step: usize,
     sharp: bool,
     _queue: DispatchRetained<DispatchQueue>,
 }
@@ -133,24 +123,24 @@ impl MacVirtualDisplay {
         Classes::find().is_ok()
     }
 
-    /// Adds a display named `name` sized for a tablet whose drawing area
-    /// is `width × height` pixels and which is sent `picture` pixels.
+    /// Adds a display named `name` for a tablet area of `width × height`
+    /// pixels, at size step `step` of [`SIZE_STEPS`].
     ///
-    /// `sharp` makes it a display the tablet shows pixel for pixel (see
-    /// [`virtual_modes`]). The system remembers the two kinds separately.
+    /// `sharp` tells the two kinds of extra screen apart (the whole drawing
+    /// area, or what the decoder takes pixel for pixel): the system
+    /// remembers the arrangement of each separately.
     pub fn new(
         name: &str,
         width: u32,
         height: u32,
-        picture: (u32, u32),
+        step: usize,
         sharp: bool,
     ) -> Result<Self, CaptureError> {
         let classes = Classes::find()?;
         let queue = DispatchQueue::new("org.inkbridge.virtual-display", None);
-        // Room for the default mode at 2x in either orientation, and for
-        // the full-size mode at 1x only (see `scale_of`).
+        // Room for every size step at 2x, in either orientation.
         let long = width.max(height);
-        let max = (virtual_modes(long, long, (long, long), sharp)[0].0 * 2).max(long);
+        let max = points_at(long, long, SIZE_STEPS.len() - 1).0 * 2;
         let size = CGSize {
             width: f64::from(width) / PIXELS_PER_MM,
             height: f64::from(height) / PIXELS_PER_MM,
@@ -178,48 +168,38 @@ impl MacVirtualDisplay {
         let this = Self {
             display,
             size: (0, 0),
-            picture: (0, 0),
+            step: usize::MAX,
             sharp,
             _queue: queue,
         };
         LIVE.lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .push((this.id(), max));
-        this.resized(width, height, picture)
+        this.resized(width, height, step)
     }
 
-    /// Changes the display to suit a `width × height` drawing area (the
-    /// tablet was rotated) that is sent `picture` pixels.
-    pub fn resize(
-        &mut self,
-        width: u32,
-        height: u32,
-        picture: (u32, u32),
-    ) -> Result<(), CaptureError> {
-        if (self.size, self.picture) != ((width, height), picture) {
-            self.apply(width, height, picture)?;
+    /// Changes the display to suit a `width × height` area (the tablet
+    /// was rotated) at size step `step`.
+    pub fn resize(&mut self, width: u32, height: u32, step: usize) -> Result<(), CaptureError> {
+        if (self.size, self.step) != ((width, height), step) {
+            self.apply(width, height, step)?;
             self.size = (width, height);
-            self.picture = picture;
+            self.step = step;
         }
         Ok(())
     }
 
-    fn resized(
-        mut self,
-        width: u32,
-        height: u32,
-        picture: (u32, u32),
-    ) -> Result<Self, CaptureError> {
-        self.resize(width, height, picture)?;
+    fn resized(mut self, width: u32, height: u32, step: usize) -> Result<Self, CaptureError> {
+        self.resize(width, height, step)?;
         Ok(self)
     }
 
-    fn apply(&self, width: u32, height: u32, picture: (u32, u32)) -> Result<(), CaptureError> {
+    fn apply(&self, width: u32, height: u32, step: usize) -> Result<(), CaptureError> {
         let classes = Classes::find()?;
         // SAFETY: as in `new`: checked selectors, matching argument types
         // (`unsigned int`, `double`, `NSArray *`); debug builds verify them.
         let applied: bool = unsafe {
-            let modes: Vec<Retained<AnyObject>> = virtual_modes(width, height, picture, self.sharp)
+            let modes: Vec<Retained<AnyObject>> = virtual_modes(width, height, step)
                 .into_iter()
                 .map(|(w, h)| {
                     let alloc: objc2::rc::Allocated<AnyObject> = msg_send![classes.mode, alloc];
@@ -243,6 +223,11 @@ impl MacVirtualDisplay {
     /// Whether this is the pixel-for-pixel kind.
     pub fn sharp(&self) -> bool {
         self.sharp
+    }
+
+    /// The size step it shows.
+    pub fn step(&self) -> usize {
+        self.step
     }
 
     /// The tablet drawing area this display was last shaped for.
@@ -316,43 +301,37 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_default_mode_is_two_thirds_of_the_tablet_with_even_sides() {
-        // The TB331FC: its decoder takes 1088 lines, so the picture is smaller.
-        assert_eq!(
-            virtual_modes(1920, 1141, (1832, 1088), false),
-            [
-                (1280, 760),
-                (916, 544),
-                (960, 570),
-                (1832, 1088),
-                (1920, 1140)
-            ]
-        );
-        // A picture of the whole area adds nothing.
-        assert_eq!(
-            virtual_modes(1920, 1200, (1920, 1200), false),
-            [(1280, 800), (960, 600), (1920, 1200)]
-        );
-        // Pixel for pixel: the decoder's size at 2x, then at 1x.
-        assert_eq!(
-            virtual_modes(1920, 1088, (1920, 1088), true),
-            [(960, 544), (1920, 1088)]
-        );
-        // Portrait, odd sizes.
-        let (w, h) = virtual_modes(1201, 1999, (1201, 1999), false)[0];
+    fn size_steps_go_from_pixel_for_pixel_to_one_point_per_pixel() {
+        // The decoder's 1920x1088: step 0 is exact, the last 1x.
+        assert_eq!(points_at(1920, 1088, 0), (960, 544));
+        assert_eq!(points_at(1920, 1088, 2), (1280, 724));
+        assert_eq!(points_at(1920, 1088, SIZE_STEPS.len() - 1), (1920, 1088));
+        // The whole 1920x1200 tablet at 1.5: the earlier default.
+        assert_eq!(points_at(1920, 1200, 2), (1280, 800));
+        // Portrait, odd sizes: even sides.
+        let (w, h) = points_at(1201, 1999, 1);
         assert_eq!((w % 2, h % 2), (0, 0));
         assert!(w < h);
     }
 
     #[test]
-    fn modes_are_drawn_at_2x_except_the_full_size_one() {
-        // A 1920x1200 tablet: the display holds 2560 pixels across.
-        assert!((scale_within(1280.0, 2560) - 2.0).abs() < f64::EPSILON);
-        assert!((scale_within(960.0, 2560) - 2.0).abs() < f64::EPSILON);
-        assert!((scale_within(1920.0, 2560) - 1.0).abs() < f64::EPSILON);
-        // The pixel-for-pixel kind for a 1920x1088 decoder holds 1920.
-        assert!((scale_within(960.0, 1920) - 2.0).abs() < f64::EPSILON);
-        assert!((scale_within(1920.0, 1920) - 1.0).abs() < f64::EPSILON);
+    fn only_the_chosen_step_is_offered() {
+        assert_eq!(virtual_modes(1920, 1088, 3), [points_at(1920, 1088, 3)]);
+        assert_eq!(virtual_modes(1920, 1088, 99), [(1920, 1088)]);
+    }
+
+    #[test]
+    fn every_step_is_drawn_at_2x() {
+        // A 1920-pixel-wide tablet: the display holds 2x its widest step.
+        let max = points_at(1920, 1920, SIZE_STEPS.len() - 1).0 * 2;
+        for step in 0..SIZE_STEPS.len() {
+            let (w, _) = points_at(1920, 1088, step);
+            assert!(
+                (scale_within(f64::from(w), max) - 2.0).abs() < f64::EPSILON,
+                "step {step}"
+            );
+        }
+        assert!((scale_within(3000.0, max) - 1.0).abs() < f64::EPSILON);
     }
 
     /// Adds a real extra display for a moment (windows may shift briefly).
@@ -367,19 +346,25 @@ mod tests {
         };
         // As in the host: the process has looked at the displays before.
         let before = crate::mac_displays().len();
-        let mut display =
-            MacVirtualDisplay::new("Inkbridge test", 1920, 1200, (1920, 1200), false).unwrap();
+        let mut display = MacVirtualDisplay::new("Inkbridge test", 1920, 1200, 2, false).unwrap();
         let id = display.id();
         std::thread::sleep(std::time::Duration::from_secs(1));
         let seen = listed(id).expect("the display is listed");
         println!("landscape: {seen:?}");
         assert_eq!((seen.bounds.width, seen.bounds.height), (2560, 1600));
 
-        display.resize(1200, 1920, (1200, 1920)).unwrap();
+        display.resize(1200, 1920, 2).unwrap();
         std::thread::sleep(std::time::Duration::from_secs(1));
         let seen = listed(display.id()).expect("still listed after a resize");
         println!("portrait: {seen:?}");
         assert_eq!((seen.bounds.width, seen.bounds.height), (1600, 2560));
+
+        // More space: a smaller step, still at 2x.
+        display.resize(1200, 1920, 4).unwrap();
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        let seen = listed(display.id()).expect("still listed after a new size");
+        println!("more space: {seen:?}");
+        assert_eq!((seen.bounds.width, seen.bounds.height), (2000, 3200));
 
         drop(display);
         std::thread::sleep(std::time::Duration::from_secs(1));

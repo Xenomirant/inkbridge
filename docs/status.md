@@ -68,7 +68,14 @@ Implemented on the MacBook (Apple silicon, macOS 27), tested with the TB331FC ov
   - "sharpest picture (thin bars)" (`--extend --sharp`): the display is exactly what the decoder
     takes (1920x1088, 960x544 points at 2x). Nothing is scaled on either side.
   Measured with a text pattern on the tablet: 9 pt text and one-pixel bars are clearly sharper
-  pixel for pixel. About 32-40 ms capture-to-screen over Wi-Fi in both. Checked with the ignored
+  pixel for pixel.
+  **Size steps** (2026-11-20): while the tablet is an extra screen, its Screen menu offers
+  "larger text" and "more space", six steps from 2 to 1 tablet pixels per point
+  (`ib_capture::SIZE_STEPS`), each drawn at 2x and scaled into the picture as a Mac scales its own
+  Retina screen. The sharp kind starts pixel for pixel (960x544 points), which is too small for
+  apps like Krita (its dialogs didn't fit, buttons looked huge); the fill kind starts at 1.5. The
+  display offers only the chosen mode: macOS keeps the current mode when the list changes, so the
+  size is chosen on the tablet, not in System Settings. Checked with both ignored tests. About 32-40 ms capture-to-screen over Wi-Fi in both. Checked with the ignored
   tests `an_extra_display_appears_and_goes_away` and `the_tablet_becomes_an_extra_screen`, and on
   the tablet. Not yet checked: a pen stroke on it.
 - **USB:** the TB331FC tethers RNDIS-only, which macOS doesn't support, so the Mac uses `--adb`

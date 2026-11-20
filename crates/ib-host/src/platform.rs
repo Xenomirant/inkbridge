@@ -305,6 +305,9 @@ static EXTRA: std::sync::Mutex<Option<(VirtualDisplay, ExtraScreen)>> = std::syn
 static EXTEND_WANTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 /// Whether that display should be the pixel-for-pixel kind.
 static SHARP_WANTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// The size step chosen on the tablet; `usize::MAX`: the kind's default.
+static STEP_WANTED: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(usize::MAX);
 /// Counts sessions, so an old session's clean-up can't undo a newer one.
 static SESSIONS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
@@ -336,6 +339,19 @@ pub struct ExtraScreen {
     /// Pixel for pixel on the tablet, with bars where the area is smaller
     /// than the drawing area; otherwise the picture is stretched to fill.
     pub sharp: bool,
+    /// macOS: the size step (`ib_capture::SIZE_STEPS`), from larger text
+    /// to more space. Windows sizes its displays with its own scaling.
+    pub step: usize,
+}
+
+/// Whether the extra display's size can be changed from the tablet (macOS;
+/// Windows uses its own display scaling, in Settings > Display).
+pub const SIZE_STEPS: usize = if cfg!(target_os = "macos") { 6 } else { 1 };
+
+/// The size step a kind of extra display starts at: pixel for pixel for
+/// the sharp kind, the Mac's usual 1.5 for the one that fills the tablet.
+pub const fn default_step(sharp: bool) -> usize {
+    if sharp || SIZE_STEPS < 3 { 0 } else { 2 }
 }
 
 /// Whether this computer can make the tablet an extra display.
@@ -375,6 +391,22 @@ pub fn set_sharp_wanted(wanted: bool) {
     SHARP_WANTED.store(wanted, std::sync::atomic::Ordering::Relaxed);
 }
 
+/// The size step for the extra display of kind `sharp`.
+pub fn step_wanted(sharp: bool) -> usize {
+    match STEP_WANTED.load(std::sync::atomic::Ordering::Relaxed) {
+        usize::MAX => default_step(sharp),
+        step => step.min(SIZE_STEPS - 1),
+    }
+}
+
+/// The tablet chose a size step; `None` goes back to the kind's default.
+pub fn set_step_wanted(step: Option<usize>) {
+    STEP_WANTED.store(
+        step.unwrap_or(usize::MAX),
+        std::sync::atomic::Ordering::Relaxed,
+    );
+}
+
 /// What the extra display was made for, while there is one.
 pub fn extra_screen() -> Option<ExtraScreen> {
     #[cfg(any(target_os = "macos", windows))]
@@ -408,17 +440,17 @@ pub fn extend(wanted: ExtraScreen) -> anyhow::Result<usize> {
             let mut extra = EXTRA
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
+            // macOS sizes the display in steps; Windows only needs the picture.
+            #[cfg(target_os = "macos")]
+            let size = wanted.step;
+            #[cfg(windows)]
+            let size = wanted.picture;
             if let Some((display, made_for)) = extra.as_mut() {
-                display.resize(width, height, wanted.picture)?;
+                display.resize(width, height, size)?;
                 *made_for = wanted;
             } else {
-                let display = VirtualDisplay::new(
-                    "Inkbridge tablet",
-                    width,
-                    height,
-                    wanted.picture,
-                    wanted.sharp,
-                )?;
+                let display =
+                    VirtualDisplay::new("Inkbridge tablet", width, height, size, wanted.sharp)?;
                 *extra = Some((display, wanted));
             }
             extra.as_ref().map(|(d, _)| u64::from(d.id()))

@@ -20,6 +20,15 @@ use crate::video::VideoPipeline;
 /// latency; when it's full the pipeline skips to a keyframe instead.
 const VIDEO_QUEUE: usize = 3;
 
+/// An entry of the tablet's display menu that isn't a display.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Offer {
+    /// Become (or switch to) this kind of extra screen: sharp or filling.
+    Kind(bool),
+    /// Show the extra screen at this size step.
+    Size(usize),
+}
+
 /// Per-session resources, released when the session ends.
 #[derive(Debug)]
 struct SessionState {
@@ -538,7 +547,7 @@ impl Host {
             .collect();
         for (name, _) in Self::extra_offers(session) {
             choices.push(ib_protocol::DisplayInfo {
-                name: name.into(),
+                name,
                 bounds: Region {
                     x: 0,
                     y: 0,
@@ -605,7 +614,8 @@ impl Host {
         // One left from the last session keeps its shape: the drawing
         // area (sent next) can be smaller than the screen.
         let viewport = crate::platform::extra_screen().map_or(screen, |e| e.viewport);
-        match Self::extend(viewport, client_max, crate::platform::sharp_wanted()) {
+        let sharp = crate::platform::sharp_wanted();
+        match Self::extend(viewport, client_max, sharp) {
             Ok(extra) => self.show(&extra),
             Err(e) => tracing::warn!("the tablet is not an extra screen: {e:#}"),
         }
@@ -623,12 +633,14 @@ impl Host {
         let picture = crate::video::picture_size(width, height, client_max);
         #[cfg(not(any(windows, target_os = "macos")))]
         let picture = (width.min(client_max.0), height.min(client_max.1));
+        let step = crate::platform::step_wanted(sharp);
         if !sharp {
             return crate::platform::ExtraScreen {
                 viewport,
                 area: viewport,
                 picture,
                 sharp,
+                step,
             };
         }
         // As much of the drawing area as the decoder takes without scaling.
@@ -646,6 +658,7 @@ impl Host {
             area,
             picture: area,
             sharp,
+            step,
         }
     }
 
@@ -660,31 +673,54 @@ impl Host {
             .and_then(crate::platform::switch_display)
     }
 
-    /// The ways the tablet can become an extra screen that it isn't using
-    /// now: the name for its menu and whether it is the sharp kind. Two
-    /// when the tablet's decoder can't take its whole drawing area, so
-    /// filling the tablet and a sharp picture are different things.
-    fn extra_offers(session: &SessionState) -> Vec<(&'static str, bool)> {
+    /// What the tablet's menu offers besides the displays: the kinds of
+    /// extra screen it isn't using now (two when the tablet's decoder can't
+    /// take its whole drawing area, so filling the tablet and a sharp
+    /// picture are different things), and while it is one, a step to
+    /// larger text or more space (macOS).
+    fn extra_offers(session: &SessionState) -> Vec<(String, Offer)> {
         if !crate::platform::extend_supported() {
             return Vec::new();
         }
         let fill = Self::extra_screen(session.viewport, session.client_max, false);
-        let current = crate::platform::extra_screen().map(|e| e.sharp);
+        let current = crate::platform::extra_screen();
+        let mut offers = Vec::new();
+        if let Some(extra) = current {
+            for (name, step) in [
+                ("larger text", extra.step.checked_sub(1)),
+                (
+                    "more space",
+                    Some(extra.step + 1).filter(|&s| s < crate::platform::SIZE_STEPS),
+                ),
+            ] {
+                let Some(step) = step else { continue };
+                #[cfg(target_os = "macos")]
+                let (w, h) = ib_capture::points_at(extra.area.0, extra.area.1, step);
+                #[cfg(not(target_os = "macos"))]
+                let (w, h) = extra.area;
+                offers.push((format!("Extra screen: {name} ({w}×{h})"), Offer::Size(step)));
+            }
+        }
+        let current = current.map(|e| e.sharp);
         if fill.picture == fill.area {
             // The decoder takes it all: one kind, sharp anyway.
-            return if current.is_some() {
-                Vec::new()
-            } else {
-                vec![("Use this tablet as an extra screen", false)]
-            };
+            if current.is_none() {
+                offers.push((
+                    "Use this tablet as an extra screen".into(),
+                    Offer::Kind(false),
+                ));
+            }
+            return offers;
         }
-        [
+        for (name, sharp) in [
             ("Extra screen: fill the tablet", false),
             ("Extra screen: sharpest picture (thin bars)", true),
-        ]
-        .into_iter()
-        .filter(|&(_, sharp)| current != Some(sharp))
-        .collect()
+        ] {
+            if current != Some(sharp) {
+                offers.push((name.into(), Offer::Kind(sharp)));
+            }
+        }
+        offers
     }
 
     /// Makes `display` the one this host maps the tablet to.
@@ -709,12 +745,23 @@ impl Host {
         // Past the real displays come the offers to be an extra screen.
         let offer = index
             .checked_sub(crate::platform::displays().len())
-            .and_then(|n| Self::extra_offers(session).get(n).copied());
+            .and_then(|n| Self::extra_offers(session).into_iter().nth(n))
+            .map(|(_, offer)| offer);
         let switched = match offer {
-            Some((_, sharp)) => {
+            Some(offer) => {
                 // Capture stops first: it may be on a display that goes away.
                 session.video = None;
-                crate::platform::set_sharp_wanted(sharp);
+                let sharp = match offer {
+                    Offer::Kind(sharp) => {
+                        crate::platform::set_sharp_wanted(sharp);
+                        crate::platform::set_step_wanted(None);
+                        sharp
+                    }
+                    Offer::Size(step) => {
+                        crate::platform::set_step_wanted(Some(step));
+                        crate::platform::sharp_wanted()
+                    }
+                };
                 Self::extend(session.viewport, session.client_max, sharp)
             }
             None => crate::platform::switch_display(index),
@@ -1137,11 +1184,9 @@ mod tests {
         println!("extra screen: {extra:?}");
         assert_eq!(extra.name, crate::platform::EXTRA_NAME);
         assert_eq!((extra.bounds.width, extra.bounds.height), (2560, 1600));
-        assert_eq!(
-            listed.len(),
-            real.len() + 2,
-            "the other kind is still offered"
-        );
+        // The extra display itself, then larger text, more space, and the
+        // other kind.
+        assert_eq!(listed.len(), real.len() + 4, "{listed:?}");
         assert!(
             pen_rx.try_iter().any(
                 |i| matches!(i, PenInput::SetDisplay(id, _) if !real.iter().any(|d| d.id == id))
@@ -1175,6 +1220,34 @@ mod tests {
         println!("sharp: picture {}x{}", frame.width, frame.height);
         assert_eq!((frame.width, frame.height), (1920, 1088));
 
+        // More space: a step with more points, scaled into the same picture.
+        let more = listed
+            .iter()
+            .position(|d| d.name.starts_with("Extra screen: more space"))
+            .expect("a more-space step is offered");
+        assert!(
+            listed
+                .iter()
+                .all(|d| !d.name.starts_with("Extra screen: larger text")),
+            "pixel for pixel is already the largest text"
+        );
+        ctl.send(&ControlMessage::SelectDisplay {
+            index: u8::try_from(more).unwrap(),
+        })
+        .await
+        .unwrap();
+        let (listed, current) = wait_for(&mut ctl, displays).await;
+        let extra = &listed[usize::from(current)];
+        assert_eq!((extra.bounds.width, extra.bounds.height), (2192, 1240));
+        let frame = loop {
+            let f = video.recv().await.unwrap();
+            if f.height < 1088 {
+                break f;
+            }
+        };
+        println!("more space: picture {}x{}", frame.width, frame.height);
+        assert_eq!(frame.width, 1920);
+
         // The tablet is rotated: the display takes its new shape.
         ctl.send(&ControlMessage::Viewport {
             width: 1200,
@@ -1184,7 +1257,8 @@ mod tests {
         .unwrap();
         let (listed, current) = wait_for(&mut ctl, displays).await;
         let extra = &listed[usize::from(current)];
-        assert_eq!((extra.bounds.width, extra.bounds.height), (1088, 1920));
+        // The size step is kept.
+        assert_eq!((extra.bounds.width, extra.bounds.height), (1240, 2192));
         let frame = loop {
             let f = video.recv().await.unwrap();
             if f.height > f.width {
