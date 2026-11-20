@@ -26,19 +26,12 @@ exception (`LICENSE-APPSTORE-EXCEPTION.md`). Read before changing things:
 - Conventional commits, signed off (`git commit -s`), small focused commits; ADR for costly decisions.
 - Tests for every change; hardware-dependent tests are `#[ignore]`d with how to run them in the doc comment.
 
-## Layout
-`crates/` — ib-protocol, ib-geometry, ib-clock, ib-transport (QUIC), ib-session, ib-capture,
-ib-encode, ib-inject, ib-portal (Linux Wayland portal), ib-host (binary `inkbridge-host`), ib-ffi (UniFFI).
-`apps/android` — Kotlin client. `tools/` — fake-tablet, pen-test page, linux-validation kit.
-
 ## Repository and machines
 Source of truth: https://github.com/Xenomirant/inkbridge (private for now), branch `main`. Development
 happens on several machines (WSL on the Windows PC, the MacBook): `git pull` before starting and push
 finished commits, so the others stay in sync.
 
 ## Build and test
-- `cargo test --workspace`; host: `cargo run -p ib-host -- --help`.
-- Android: `apps/android` (Gradle; Rust core via cargo-ndk).
 - The user's devices: Windows 11 PC (RTX 5060 + Intel iGPU, WSL Ubuntu 26.04 for development),
   Lenovo Xiaoxin Pad 2024 (TB331FC, Android 15) with Lenovo Tab Pen Plus, a MacBook; iPad later.
 - On the campus network, Anthropic's API needs the university VPN.
