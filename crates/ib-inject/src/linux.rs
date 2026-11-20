@@ -6,6 +6,9 @@
 //! default: granting it is an opt-in **Advanced option** (a one-time udev
 //! rule, see `docs/linux.md`). Without it the host falls back to features
 //! that need no root.
+//!
+//! Finger gestures go to a second virtual device, a multitouch touchscreen
+//! (created on first use), so apps pinch-zoom natively as on a real one.
 
 use evdev::uinput::VirtualDevice;
 use evdev::{
@@ -13,10 +16,10 @@ use evdev::{
     RelativeAxisCode, UinputAbsSetup,
 };
 use ib_geometry::{DesktopPoint, Region};
-use ib_protocol::{Buttons, PenFeatures, PenSample, Tool};
+use ib_protocol::{Buttons, PenFeatures, PenSample, Tool, TouchPhase};
 
 use crate::tracker::{PenTracker, Step};
-use crate::{InjectError, PenSink};
+use crate::{InjectError, PenSink, TouchPoint};
 
 /// Pressure resolution reported to applications.
 const MAX_PRESSURE: i32 = 4096;
@@ -24,6 +27,8 @@ const MAX_PRESSURE: i32 = 4096;
 const WHEEL_HI_RES_PER_NOTCH: f64 = 120.0;
 /// Wheel units per pixel of content movement (~100 px per notch).
 const WHEEL_PER_PX: f64 = WHEEL_HI_RES_PER_NOTCH / 100.0;
+/// Fingers the virtual touchscreen tracks at once (multitouch slots).
+const TOUCH_SLOTS: u8 = 10;
 
 pub struct UinputPenSink {
     pen: VirtualDevice,
@@ -33,6 +38,8 @@ pub struct UinputPenSink {
     tool: Tool,
     last_at: DesktopPoint,
     wheel_rest: (f64, f64),
+    touch: Option<VirtualDevice>,
+    fingers: Fingers,
 }
 
 impl std::fmt::Debug for UinputPenSink {
@@ -98,6 +105,8 @@ impl UinputPenSink {
             tool: Tool::Pen,
             last_at: DesktopPoint { x: 0.0, y: 0.0 },
             wheel_rest: (0.0, 0.0),
+            touch: None,
+            fingers: Fingers::default(),
         })
     }
 
@@ -174,6 +183,132 @@ impl UinputPenSink {
         }
         Ok(self.wheel.as_mut().expect("created above"))
     }
+
+    fn touch_device(&mut self) -> Result<&mut VirtualDevice, InjectError> {
+        if self.touch.is_none() {
+            let axis =
+                |code, max: i32| UinputAbsSetup::new(code, AbsInfo::new(0, 0, max, 0, 0, 10));
+            let w = i32::try_from(self.desktop.width.max(2)).unwrap_or(i32::MAX) - 1;
+            let h = i32::try_from(self.desktop.height.max(2)).unwrap_or(i32::MAX) - 1;
+            let mut keys = AttributeSet::<KeyCode>::new();
+            keys.insert(KeyCode::BTN_TOUCH);
+            let mut props = AttributeSet::<PropType>::new();
+            props.insert(PropType::DIRECT);
+            let dev = VirtualDevice::builder()
+                .map_err(|e| unavailable(&e))?
+                .name("Inkbridge Touch")
+                .with_keys(&keys)
+                .and_then(|b| b.with_absolute_axis(&axis(AbsoluteAxisCode::ABS_X, w)))
+                .and_then(|b| b.with_absolute_axis(&axis(AbsoluteAxisCode::ABS_Y, h)))
+                .and_then(|b| {
+                    b.with_absolute_axis(&axis(
+                        AbsoluteAxisCode::ABS_MT_SLOT,
+                        i32::from(TOUCH_SLOTS) - 1,
+                    ))
+                })
+                .and_then(|b| {
+                    b.with_absolute_axis(&axis(AbsoluteAxisCode::ABS_MT_TRACKING_ID, 65535))
+                })
+                .and_then(|b| b.with_absolute_axis(&axis(AbsoluteAxisCode::ABS_MT_POSITION_X, w)))
+                .and_then(|b| b.with_absolute_axis(&axis(AbsoluteAxisCode::ABS_MT_POSITION_Y, h)))
+                .and_then(|b| b.with_properties(&props))
+                .and_then(evdev::uinput::VirtualDeviceBuilder::build)
+                .map_err(|e| unavailable(&e))?;
+            self.touch = Some(dev);
+        }
+        Ok(self.touch.as_mut().expect("created above"))
+    }
+}
+
+/// Multitouch (protocol B) state of the virtual touchscreen: which slots
+/// hold a finger, and the next tracking id.
+#[derive(Debug, Default)]
+struct Fingers {
+    /// Tablet finger id per slot.
+    slots: [Option<u8>; TOUCH_SLOTS as usize],
+    next_tracking_id: i32,
+}
+
+impl Fingers {
+    /// Kernel events for one touch frame (positions relative to `origin`),
+    /// without the closing SYN_REPORT.
+    fn events(&mut self, frame: &[TouchPoint], origin: DesktopPoint) -> Vec<InputEvent> {
+        let abs = UinputPenSink::abs;
+        // Slots are below TOUCH_SLOTS, so the conversion can't fail.
+        let slot_event = |slot: usize| {
+            abs(
+                AbsoluteAxisCode::ABS_MT_SLOT,
+                i32::try_from(slot).unwrap_or_default(),
+            )
+        };
+        let mut ev = Vec::new();
+        for t in frame {
+            let held = self.slots.iter().position(|s| *s == Some(t.id));
+            let x = (t.at.x - origin.x).round() as i32;
+            let y = (t.at.y - origin.y).round() as i32;
+            match (t.phase, held) {
+                (TouchPhase::Down | TouchPhase::Move, Some(slot)) => {
+                    ev.push(slot_event(slot));
+                    ev.push(abs(AbsoluteAxisCode::ABS_MT_POSITION_X, x));
+                    ev.push(abs(AbsoluteAxisCode::ABS_MT_POSITION_Y, y));
+                }
+                (TouchPhase::Down | TouchPhase::Move, None) => {
+                    // More fingers than slots: the extra ones are ignored.
+                    let Some(slot) = self.slots.iter().position(Option::is_none) else {
+                        continue;
+                    };
+                    self.slots[slot] = Some(t.id);
+                    let id = self.next_tracking_id;
+                    self.next_tracking_id = (id + 1) % 65536;
+                    ev.push(slot_event(slot));
+                    ev.push(abs(AbsoluteAxisCode::ABS_MT_TRACKING_ID, id));
+                    ev.push(abs(AbsoluteAxisCode::ABS_MT_POSITION_X, x));
+                    ev.push(abs(AbsoluteAxisCode::ABS_MT_POSITION_Y, y));
+                }
+                (TouchPhase::Up | TouchPhase::Cancel, Some(slot)) => {
+                    self.slots[slot] = None;
+                    ev.push(slot_event(slot));
+                    ev.push(abs(AbsoluteAxisCode::ABS_MT_TRACKING_ID, -1));
+                }
+                (TouchPhase::Up | TouchPhase::Cancel, None) => {}
+            }
+        }
+        if ev.is_empty() {
+            return ev;
+        }
+        // Single-touch emulation for clients that read only the legacy axes.
+        let down = self.slots.iter().any(Option::is_some);
+        ev.push(UinputPenSink::key(KeyCode::BTN_TOUCH, down));
+        if let Some(first) = frame.iter().find(|t| {
+            matches!(t.phase, TouchPhase::Down | TouchPhase::Move)
+                && self.slots.contains(&Some(t.id))
+        }) {
+            ev.push(abs(
+                AbsoluteAxisCode::ABS_X,
+                (first.at.x - origin.x).round() as i32,
+            ));
+            ev.push(abs(
+                AbsoluteAxisCode::ABS_Y,
+                (first.at.y - origin.y).round() as i32,
+            ));
+        }
+        ev
+    }
+
+    /// Lifts every finger still down.
+    fn lift_all(&mut self) -> Vec<InputEvent> {
+        let frame: Vec<TouchPoint> = self
+            .slots
+            .iter()
+            .flatten()
+            .map(|&id| TouchPoint {
+                id,
+                at: DesktopPoint { x: 0.0, y: 0.0 },
+                phase: TouchPhase::Cancel,
+            })
+            .collect();
+        self.events(&frame, DesktopPoint { x: 0.0, y: 0.0 })
+    }
 }
 
 impl PenSink for UinputPenSink {
@@ -233,7 +368,28 @@ impl PenSink for UinputPenSink {
             .map_err(|e| InjectError::Rejected(e.to_string()))
     }
 
+    fn touch(&mut self, frame: &[TouchPoint]) -> Result<(), InjectError> {
+        let origin = DesktopPoint {
+            x: f64::from(self.desktop.x),
+            y: f64::from(self.desktop.y),
+        };
+        let ev = self.fingers.events(frame, origin);
+        if ev.is_empty() {
+            return Ok(());
+        }
+        self.touch_device()?
+            .emit(&ev)
+            .map_err(|e| InjectError::Rejected(e.to_string()))
+    }
+
     fn release(&mut self) -> Result<(), InjectError> {
+        let lift = self.fingers.lift_all();
+        if !lift.is_empty()
+            && let Some(dev) = self.touch.as_mut()
+        {
+            dev.emit(&lift)
+                .map_err(|e| InjectError::Rejected(e.to_string()))?;
+        }
         let leave = PenSample {
             state: ib_protocol::PenState::OutOfRange,
             tool: self.tool,
@@ -245,5 +401,118 @@ impl PenSink for UinputPenSink {
             self.emit_events(&ev)?;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn finger(id: u8, x: f64, y: f64, phase: TouchPhase) -> TouchPoint {
+        TouchPoint {
+            id,
+            at: DesktopPoint { x, y },
+            phase,
+        }
+    }
+
+    /// (axis or key code, value) pairs, for readable assertions.
+    fn codes(ev: &[InputEvent]) -> Vec<(u16, i32)> {
+        ev.iter().map(|e| (e.code(), e.value())).collect()
+    }
+
+    const SLOT: u16 = AbsoluteAxisCode::ABS_MT_SLOT.0;
+    const ID: u16 = AbsoluteAxisCode::ABS_MT_TRACKING_ID.0;
+    const MX: u16 = AbsoluteAxisCode::ABS_MT_POSITION_X.0;
+    const MY: u16 = AbsoluteAxisCode::ABS_MT_POSITION_Y.0;
+    const TOUCH: u16 = KeyCode::BTN_TOUCH.0;
+    const AX: u16 = AbsoluteAxisCode::ABS_X.0;
+    const AY: u16 = AbsoluteAxisCode::ABS_Y.0;
+
+    #[test]
+    fn a_pinch_uses_two_slots_and_lifts_them() {
+        let mut f = Fingers::default();
+        let origin = DesktopPoint { x: 100.0, y: 0.0 };
+        let down = f.events(
+            &[
+                finger(7, 200.0, 50.0, TouchPhase::Down),
+                finger(9, 300.0, 50.0, TouchPhase::Down),
+            ],
+            origin,
+        );
+        assert_eq!(
+            codes(&down),
+            vec![
+                (SLOT, 0),
+                (ID, 0),
+                (MX, 100),
+                (MY, 50),
+                (SLOT, 1),
+                (ID, 1),
+                (MX, 200),
+                (MY, 50),
+                (TOUCH, 1),
+                (AX, 100),
+                (AY, 50),
+            ]
+        );
+        let moved = f.events(&[finger(9, 320.0, 60.0, TouchPhase::Move)], origin);
+        assert_eq!(
+            codes(&moved),
+            vec![
+                (SLOT, 1),
+                (MX, 220),
+                (MY, 60),
+                (TOUCH, 1),
+                (AX, 220),
+                (AY, 60)
+            ]
+        );
+        let up = f.events(
+            &[
+                finger(7, 200.0, 50.0, TouchPhase::Up),
+                finger(9, 320.0, 60.0, TouchPhase::Cancel),
+            ],
+            origin,
+        );
+        assert_eq!(
+            codes(&up),
+            vec![(SLOT, 0), (ID, -1), (SLOT, 1), (ID, -1), (TOUCH, 0)]
+        );
+    }
+
+    #[test]
+    fn new_fingers_get_new_tracking_ids() {
+        let mut f = Fingers::default();
+        let o = DesktopPoint { x: 0.0, y: 0.0 };
+        f.events(&[finger(1, 0.0, 0.0, TouchPhase::Down)], o);
+        f.events(&[finger(1, 0.0, 0.0, TouchPhase::Up)], o);
+        let again = f.events(&[finger(1, 0.0, 0.0, TouchPhase::Down)], o);
+        assert_eq!(codes(&again)[..2], [(SLOT, 0), (ID, 1)]);
+    }
+
+    #[test]
+    fn unknown_lifts_and_full_slots_send_nothing() {
+        let mut f = Fingers::default();
+        let o = DesktopPoint { x: 0.0, y: 0.0 };
+        assert_eq!(
+            codes(&f.events(&[finger(3, 0.0, 0.0, TouchPhase::Up)], o)),
+            []
+        );
+        let many: Vec<TouchPoint> = (0..=TOUCH_SLOTS)
+            .map(|i| finger(i, 0.0, 0.0, TouchPhase::Down))
+            .collect();
+        f.events(&many, o);
+        let extra = f.events(&[finger(TOUCH_SLOTS, 5.0, 5.0, TouchPhase::Move)], o);
+        assert_eq!(codes(&extra), [], "the 11th finger has no slot");
+    }
+
+    #[test]
+    fn lift_all_releases_resting_fingers() {
+        let mut f = Fingers::default();
+        let o = DesktopPoint { x: 0.0, y: 0.0 };
+        f.events(&[finger(4, 1.0, 1.0, TouchPhase::Down)], o);
+        assert_eq!(codes(&f.lift_all()), vec![(SLOT, 0), (ID, -1), (TOUCH, 0)]);
+        assert_eq!(codes(&f.lift_all()), []);
     }
 }

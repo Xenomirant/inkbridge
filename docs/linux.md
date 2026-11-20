@@ -115,5 +115,5 @@ release as the live system.
 | Pen with pressure | ✅ uinput (after `--setup-uinput`) | ✅ uinput (after `--setup-uinput`) |
 | Pen without setup | — | ✅ pointer only (RemoteDesktop portal) |
 | Two-finger scroll | ✅ uinput hi-res wheel | ✅ uinput, or portal smooth scroll |
-| Pinch-zoom in apps | — | ✅ portal touchscreen (no-setup path) |
+| Pinch-zoom in apps | ✅ uinput touchscreen | ✅ uinput touchscreen, or portal touchscreen (no-setup path) |
 | USB (tethering) | ✅ | ✅ |
