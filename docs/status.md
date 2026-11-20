@@ -30,7 +30,13 @@ live-USB kit (Ubuntu 26.04.1; Intel iGPU encodes via iHD, the RTX runs nouveau t
 ## In progress — M4 macOS host
 Implemented on the MacBook (Apple silicon, macOS 27), tested with the TB331FC over Wi-Fi:
 - **Pen:** CGEvent tablet-point events with proximity (`ib-inject/src/macos.rs`). Works with the real
-  pen. The app matrix (Krita, Preview/Notes, others) and which apps honour pressure are still to record.
+  pen. Pressure and tilt reported working by the user (2026-11-20) in Krita, Rnote, Inkscape and
+  Blender; the other apps (Freeform, Notes, Preview, OneNote) are not recorded yet. The eraser and
+  barrel button depend on the pen: the tested one has no eraser end.
+- **Pinch to zoom:** not on macOS. Two-finger scrolling works; a pinch is dropped, because macOS has
+  no public way to post a zoom gesture. A synthesized magnify gesture (undocumented `CGEvent`
+  fields) worked in a test but was taken out (2026-11-20): nothing that can break with any macOS
+  release.
 - **Capture:** ScreenCaptureKit (`ib-capture/src/macos.rs`), main display only. CPU frames (BGRA) for
   the software encoder, GPU pixel buffers (NV12) for VideoToolbox. The system scales frames to the
   encoder's size.
