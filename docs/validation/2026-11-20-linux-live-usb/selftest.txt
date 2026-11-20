@@ -1,0 +1,31 @@
+Inkbridge Linux self-test, inkbridge-host 0.1.0
+
+== System
+      OS: Ubuntu 26.04.1 LTS, kernel 7.0.0-30-generic
+      Session: wayland (ubuntu:GNOME), WAYLAND_DISPLAY=wayland-0
+      GPU /dev/dri/renderD128: driver i915, PCI 0x8086:0x7d67
+      GPU /dev/dri/renderD129: driver nouveau, PCI 0x10de:0x2d05
+
+== Hardware video encoder (VA-API)
+      Device: /dev/dri/renderD128 (Intel iHD driver for Intel(R) Gen Graphics - 26.1.2 ()), High profile
+PASS  60 frames of 1920x1080 encode and decode correctly
+      Encode time: median 6.13 ms, p95 8.12 ms, max 12.72 ms; average 32 KB/frame
+
+== Wayland screen sharing (portal + PipeWire)
+PASS  screen sharing granted (6109.6 s including the dialog)
+      Stream: 2560x1440 pixels, logical scale 1.000
+PASS  60 frames in 5 s (12 fps while the screen changed)
+      Gap between frames: median 33.01 ms, p95 488.34 ms, max 781.18 ms
+      Last captured frame saved to /home/ubuntu/inkbridge-results-20261120-133431/capture.ppm
+PASS  captured frames encode with VA-API and decode with the right colours (median 9.66 ms, p95 13.91 ms, max 20.98 ms)
+
+== Wayland pointer (remote desktop portal)
+FAIL  pointer did not move as expected (user)
+
+== Pressure pen (uinput, Advanced option)
+      not set up: pen injection unavailable: pen pressure on Linux needs access to /dev/uinput. This is an optional, one-time setup (Advanced option): see docs/linux.md, or run `inkbridge-host --setup-uinput`.
+
+== Summary
+1 check(s) failed:
+  - pointer did not move as expected (user)
+Report saved to /home/ubuntu/inkbridge-results-20261120-133431/selftest.txt

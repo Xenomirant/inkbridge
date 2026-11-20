@@ -32,8 +32,19 @@ USB tethering):**
 - Two-finger scroll works (Terminal, Firefox); pinch-zoom works in apps through the portal touchscreen.
   Found and fixed on the way: a second portal request hung (ashpd's cached D-Bus connection outlived
   its runtime), scroll gestures never ended, and pinches were dropped (no touch in the portal backend).
-- Still to do: uinput pressure (`--setup-uinput`), `--adb`, the desktop app, latency figures. The
-  picture in portrait is upscaled (900x1440 of the monitor onto 1200x1920); the extra screen will fix it.
+- uinput pen after `--setup-uinput` (worked through `pkexec` without a password in the live
+  session): pressure and hover work in Xournal++.
+- Known issues (evidence in `docs/validation/2026-11-20-linux-live-usb/`):
+  - **Tilt X is always 0, tilt Y only leans away.** The pen hardware reports both axes (±60°); the
+    host receives AXIS_ORIENTATION = 0 from the app, so all tilt lands on −Y. Next: log
+    AXIS_TILT/AXIS_ORIENTATION in the app on the TB331FC to see whether Android/ZUI or the app loses it.
+  - **The pen button doesn't reach the computer.** The Tab Pen Plus button is `BTN_STYLUS2`
+    (Android `BUTTON_STYLUS_SECONDARY`); `StylusMapper` only forwards PRIMARY/SECONDARY.
+  - Pinch-zoom works on the portal path only; with uinput the pen sink has no touch.
+  - A tablet that dials in over the tethering link is labelled `transport=Wifi` (the host's own
+    dial over USB is labelled correctly).
+- Still to do: `--adb`, the desktop app, latency figures. The picture in portrait is upscaled
+  (900x1440 of the monitor onto 1200x1920); the extra screen will fix it.
 
 ## In progress — M4 macOS host
 Implemented on the MacBook (Apple silicon, macOS 27), tested with the TB331FC over Wi-Fi:

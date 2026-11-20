@@ -1,0 +1,19 @@
+Pen tilt, 60 s recording while tilting in all directions (2026-11-20)
+
+Tablet hardware (adb getevent, himax-stylus /dev/input/event3):
+  ABS_TILT_X     1786 events, range -61..64
+  ABS_TILT_Y     1618 events, range -56..63
+  ABS_PRESSURE   3346 events, range 0..4095
+       23 BTN_DIGI DOWN
+       23 BTN_DIGI UP
+        2 BTN_STYLUS2 DOWN
+        2 BTN_STYLUS2 UP
+       48 BTN_TOUCH DOWN
+       48 BTN_TOUCH UP
+
+PC virtual pen (libinput debug-events, Inkbridge Pen):
+  tilt events 10625: X 0..0 (nonzero 0), Y -50.49..0
+  button events: 0
+
+Reading: Android hands the app AXIS_ORIENTATION = 0, so all tilt lands on -Y; BTN_STYLUS2
+(BUTTON_STYLUS_SECONDARY) is not forwarded by StylusMapper.
