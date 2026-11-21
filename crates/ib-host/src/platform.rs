@@ -77,7 +77,12 @@ pub fn set_uinput_access(enable: bool) -> anyhow::Result<()> {
              modprobe uinput && udevadm control --reload-rules && udevadm trigger --name-match=uinput"
         )
     } else {
-        format!("rm -f {UINPUT_RULE_PATH} {UINPUT_MODULE_PATH} && udevadm control --reload-rules")
+        // The access given to the logged-in user stays on the device node
+        // until a reboot unless it is cleared here.
+        format!(
+            "rm -f {UINPUT_RULE_PATH} {UINPUT_MODULE_PATH} && udevadm control --reload-rules && \
+             {{ ! command -v setfacl >/dev/null || setfacl -b /dev/uinput; }}"
+        )
     };
     let has_pkexec = std::process::Command::new("pkexec")
         .arg("--version")

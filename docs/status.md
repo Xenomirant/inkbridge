@@ -51,7 +51,9 @@ USB tethering):**
 - Keyboard from the tablet with the uinput option: a third virtual device ("Inkbridge Keyboard").
   Keys and shortcuts work on any layout (letters at their US key, as on macOS); text covers the
   US layout's characters, others are skipped (Linux injects keys, not characters).
-- Still to do: the desktop app; the keyboard on the no-setup portal path. The picture in portrait
+- The keyboard also works on the no-setup portal path (the RemoteDesktop keyboard, same mapping).
+  `--remove-uinput-setup` left the user's access on `/dev/uinput` until a reboot; it now clears it.
+- Still to do: the desktop app. The picture in portrait
   is upscaled (900x1440 of the monitor onto 1200x1920); the extra screen will fix it.
 
 ## In progress — M4 macOS host
@@ -165,7 +167,7 @@ Still to do for M4:
   Android's keyboard (any language) and a row of extra keys: Esc, Tab, Win (tap: Start; hold: keep
   it pressed for Win+key), Ctrl/Alt/Shift (stay pressed for the next key), arrows, Del, Enter. A
   hardware keyboard on the tablet works too. macOS since 2026-11-20 (below); Linux with the uinput
-  option since 2026-11-20 (keys, shortcuts and US-layout text; the no-setup portal path: to do).
+  option and on the no-setup portal path since 2026-11-21 (keys, shortcuts and US-layout text).
 - **The tablet as an extra screen on Windows (Advanced, one admin prompt):**
   `--install-virtual-display` installs the third-party Virtual Display Driver (MIT, signed by SignPath
   Foundation; pinned release and SHA-256, signature checked), rendering on the GPU of the main

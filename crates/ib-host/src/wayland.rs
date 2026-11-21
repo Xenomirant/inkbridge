@@ -40,39 +40,23 @@ fn token_path(dir: &Path, pointer: bool) -> PathBuf {
     })
 }
 
-/// Written when the desktop was asked for touch and didn't grant it, so it
-/// isn't asked on every start.
-const NO_TOUCH_MARKER: &str = "wayland-no-touch";
+/// Written when the desktop was asked again for the input devices it
+/// offers (touch, keyboard) and still granted fewer, so it isn't asked on
+/// every start.
+const FEWER_DEVICES_MARKER: &str = "wayland-fewer-devices";
 
-/// Touch control in a remote-desktop grant.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Touch {
-    Granted,
-    /// The desktop offers it, but this grant doesn't include it.
-    Missing,
-    /// The desktop (or its portal) has no touch control.
-    Unavailable,
+/// Whether to drop a restored grant and show the dialog again: it was saved
+/// before the host asked for every device the desktop offers.
+fn ask_again_for_devices(restored: bool, missing: bool, declined_before: bool) -> bool {
+    restored && missing && !declined_before
 }
 
-impl Touch {
-    fn of(grant: &ib_portal::Grant) -> Self {
-        if grant
-            .pointer
-            .as_ref()
-            .is_some_and(ib_portal::Pointer::has_touch)
-        {
-            Self::Granted
-        } else if grant.touch_offered {
-            Self::Missing
-        } else {
-            Self::Unavailable
-        }
-    }
-}
-
-/// Whether to drop a restored grant and show the dialog again for touch.
-fn ask_again_for_touch(restored: bool, touch: Touch, declined_before: bool) -> bool {
-    restored && touch == Touch::Missing && !declined_before
+/// Granted extras, for the log.
+fn devices(grant: &ib_portal::Grant) -> (bool, bool) {
+    grant
+        .pointer
+        .as_ref()
+        .map_or((false, false), |p| (p.has_touch(), p.has_keyboard()))
 }
 
 /// Asks the desktop for the screen (and pointer control if `pointer`),
@@ -94,24 +78,26 @@ pub fn connect(dir: &Path, pointer: bool) -> anyhow::Result<&'static WaylandDesk
         restore_token: saved,
         pointer,
     })?;
-    let declined = dir.join(NO_TOUCH_MARKER);
-    if ask_again_for_touch(restored, Touch::of(&grant), declined.exists()) {
-        // A permission saved before touch support covers only the pointer:
-        // ask once more so finger gestures (pinch-zoom) reach apps.
-        println!("Your desktop will ask again, now also for touch control (only this once).");
+    let declined = dir.join(FEWER_DEVICES_MARKER);
+    if ask_again_for_devices(restored, grant.missing_devices, declined.exists()) {
+        // A permission saved by an older version covers fewer devices (only
+        // the pointer, or no keyboard): ask once more so finger gestures
+        // and typing from the tablet reach apps.
+        println!("Your desktop will ask again, now also for touch and keyboard (only this once).");
         drop(stream);
         grant.close();
         (stream, grant) = ib_portal::request(ib_portal::Request {
             restore_token: None,
             pointer,
         })?;
-        if Touch::of(&grant) != Touch::Granted {
+        if grant.missing_devices {
             std::fs::create_dir_all(dir)?;
             std::fs::write(&declined, "")?;
         }
     }
     if pointer {
-        tracing::info!(touch = ?Touch::of(&grant), "desktop remote control granted");
+        let (touch, keyboard) = devices(&grant);
+        tracing::info!(touch, keyboard, "desktop remote control granted");
     }
     if let Some(t) = &grant.restore_token {
         std::fs::create_dir_all(dir)?;
@@ -150,26 +136,13 @@ impl WaylandDesktop {
 
 #[cfg(test)]
 mod tests {
-    use super::{Touch, ask_again_for_touch};
+    use super::ask_again_for_devices;
 
     #[test]
-    fn asks_again_only_for_an_old_grant_without_touch() {
-        assert!(ask_again_for_touch(true, Touch::Missing, false));
-        assert!(
-            !ask_again_for_touch(false, Touch::Missing, false),
-            "just asked"
-        );
-        assert!(
-            !ask_again_for_touch(true, Touch::Granted, false),
-            "has touch"
-        );
-        assert!(
-            !ask_again_for_touch(true, Touch::Unavailable, false),
-            "not offered"
-        );
-        assert!(
-            !ask_again_for_touch(true, Touch::Missing, true),
-            "declined before"
-        );
+    fn asks_again_only_for_an_old_grant_with_fewer_devices() {
+        assert!(ask_again_for_devices(true, true, false));
+        assert!(!ask_again_for_devices(false, true, false), "just asked");
+        assert!(!ask_again_for_devices(true, false, false), "has them all");
+        assert!(!ask_again_for_devices(true, true, true), "declined before");
     }
 }

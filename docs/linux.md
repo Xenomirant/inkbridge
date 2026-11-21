@@ -43,9 +43,9 @@ same dialog as screen sharing. The pen then works like a mouse: hover moves the 
 the left button, two-finger scrolling uses smooth scroll (the gesture ends when the fingers lift and
 inertia stops). Where the desktop offers it, the same dialog also grants the **touchscreen**, and pinches
 reach apps as real multi-touch, so they zoom natively (Firefox, image and PDF viewers; GNOME Shell itself
-has no pinch-zoom). A permission saved by an older version covers only the pointer: the host asks once
-more, and if touch still isn't granted it writes `wayland-no-touch` in the config directory and stops
-asking. It has **no pressure or tilt**: the portal has no stylus events yet. libei's tablet interface
+has no pinch-zoom). The dialog also grants the **keyboard** for typing from the tablet. A permission
+saved by an older version covers fewer devices: the host asks once more, and if the desktop still
+grants fewer it writes `wayland-fewer-devices` in the config directory and stops asking. It has **no pressure or tilt**: the portal has no stylus events yet. libei's tablet interface
 will add them once compositors support it.
 
 On X11 without uinput there is no pen input; run `--setup-uinput`.
@@ -116,5 +116,5 @@ release as the live system.
 | Pen without setup | — | ✅ pointer only (RemoteDesktop portal) |
 | Two-finger scroll | ✅ uinput hi-res wheel | ✅ uinput, or portal smooth scroll |
 | Pinch-zoom in apps | ✅ uinput touchscreen | ✅ uinput touchscreen, or portal touchscreen (no-setup path) |
-| Keyboard from the tablet | ✅ uinput keyboard (US-layout text) | ✅ uinput keyboard; no-setup path: not yet |
+| Keyboard from the tablet | ✅ uinput keyboard (US-layout text) | ✅ uinput keyboard, or the portal keyboard (no-setup path) |
 | USB (tethering) | ✅ | ✅ |

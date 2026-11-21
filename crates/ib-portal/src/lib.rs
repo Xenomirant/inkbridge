@@ -80,9 +80,9 @@ pub struct Grant {
     pub restore_token: Option<String>,
     /// Present when pointer control was requested and granted.
     pub pointer: Option<Pointer>,
-    /// The desktop offers touch control, whether or not it was granted (a
-    /// restored grant keeps the devices it was first given).
-    pub touch_offered: bool,
+    /// The desktop offers input devices (touch, keyboard) this grant lacks:
+    /// a restored grant keeps the devices it was first given.
+    pub missing_devices: bool,
     session: SessionThread,
 }
 
@@ -131,6 +131,11 @@ pub enum PointerCmd {
     TouchUp {
         slot: u32,
     },
+    /// A key (evdev code) down or up.
+    Key {
+        code: i32,
+        pressed: bool,
+    },
 }
 
 /// Moves and clicks the desktop pointer (and touches, if granted) through
@@ -140,6 +145,7 @@ pub enum PointerCmd {
 pub struct Pointer {
     tx: amp::UnboundedSender<PointerCmd>,
     touch: bool,
+    keyboard: bool,
 }
 
 impl Pointer {
@@ -147,13 +153,30 @@ impl Pointer {
     /// receiver instead (tests, diagnostics).
     pub fn detached() -> (Self, amp::UnboundedReceiver<PointerCmd>) {
         let (tx, rx) = amp::unbounded_channel();
-        (Self { tx, touch: true }, rx)
+        (
+            Self {
+                tx,
+                touch: true,
+                keyboard: true,
+            },
+            rx,
+        )
     }
 
     /// Whether the desktop granted touch control too (older portals and
     /// desktops may grant only the pointer).
     pub fn has_touch(&self) -> bool {
         self.touch
+    }
+
+    /// Whether the desktop granted keyboard control too.
+    pub fn has_keyboard(&self) -> bool {
+        self.keyboard
+    }
+
+    /// Presses or releases a key (an evdev key code).
+    pub fn key(&self, code: i32, pressed: bool) -> bool {
+        self.tx.send(PointerCmd::Key { code, pressed }).is_ok()
     }
 
     /// Absolute move, in the stream's logical coordinates (0,0 = the
@@ -343,7 +366,7 @@ async fn start_cast(req: &Request) -> Result<((Stream, Grant), Session<Screencas
     let grant = Grant {
         restore_token: started.restore_token().map(str::to_owned),
         pointer: None,
-        touch_offered: false,
+        missing_devices: false,
         session: SessionThread {
             stop: None,
             done: None,
@@ -372,14 +395,15 @@ async fn start_remote(req: &Request) -> Result<RemoteStart, PortalError> {
         .create_session(CreateSessionOptions::default())
         .await
         .map_err(portal_err)?;
-    // Touch too where the desktop offers it (pinch-zoom in apps); asking
-    // for a type it lacks could fail the whole request.
-    let touch = remote
+    // Touch (pinch-zoom in apps) and the keyboard (typing from the
+    // tablet) too, where the desktop offers them: asking for a type it
+    // lacks could fail the whole request.
+    let extra = remote
         .available_device_types()
         .await
         .unwrap_or(DeviceType::POINTER)
-        & DeviceType::TOUCHSCREEN;
-    let devices = DeviceType::POINTER | touch;
+        & (DeviceType::TOUCHSCREEN | DeviceType::KEYBOARD);
+    let devices = DeviceType::POINTER | extra;
     // On a combined session the persist mode/token belong to SelectDevices.
     remote
         .select_devices(
@@ -425,8 +449,9 @@ async fn start_remote(req: &Request) -> Result<RemoteStart, PortalError> {
             pointer: Some(Pointer {
                 tx,
                 touch: started.devices().contains(DeviceType::TOUCHSCREEN),
+                keyboard: started.devices().contains(DeviceType::KEYBOARD),
             }),
-            touch_offered: !touch.is_empty(),
+            missing_devices: !started.devices().contains(devices),
             session: SessionThread {
                 stop: None,
                 done: None,
@@ -498,6 +523,21 @@ async fn pump(
                     )
                     .await
             }
+            PointerCmd::Key { code, pressed } => {
+                let state = if pressed {
+                    ashpd::desktop::remote_desktop::KeyState::Pressed
+                } else {
+                    ashpd::desktop::remote_desktop::KeyState::Released
+                };
+                remote
+                    .notify_keyboard_keycode(
+                        session,
+                        code,
+                        state,
+                        ashpd::desktop::remote_desktop::NotifyKeyboardKeycodeOptions::default(),
+                    )
+                    .await
+            }
             PointerCmd::TouchUp { slot } => {
                 remote
                     .notify_touch_up(session, slot, NotifyTouchUpOptions::default())
@@ -507,7 +547,7 @@ async fn pump(
         if let Err(e) = r
             && !std::mem::replace(&mut warned, true)
         {
-            tracing::warn!("portal rejected a pointer or touch event: {e}");
+            tracing::warn!("portal rejected an input event: {e}");
         }
     }
 }

@@ -175,11 +175,14 @@ impl PenThread {
                 end,
             } => self.on_scroll(x, y, dx, dy, t_us, end),
             PenInput::Text(text) => {
+                // Content isn't logged; it is what the user types.
+                tracing::debug!(chars = text.chars().count(), "typing text from the tablet");
                 if let Err(e) = self.sink.type_text(&text) {
                     tracing::warn!("{e}");
                 }
             }
             PenInput::Key(key, modifiers) => {
+                tracing::debug!(?key, ?modifiers, "key from the tablet");
                 if let Err(e) = self.sink.key(key, modifiers) {
                     tracing::warn!("{e}");
                 }

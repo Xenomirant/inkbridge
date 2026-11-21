@@ -3,7 +3,7 @@
 //! hover moves, contact holds the left button). Used when uinput access
 //! (the Advanced option) isn't granted. Finger gestures go through the
 //! portal's touchscreen, when the desktop grants it, so apps pinch-zoom
-//! natively.
+//! natively, and typing on the tablet through its keyboard (`linux_keys`).
 //!
 //! A future libei backend can add real stylus events once compositors
 //! support libei's tablet interface.
@@ -12,7 +12,7 @@ use std::collections::HashMap;
 
 use ib_geometry::DesktopPoint;
 use ib_portal::{BTN_LEFT, Pointer};
-use ib_protocol::{PenFeatures, PenSample, PenState, TouchPhase};
+use ib_protocol::{Key, Modifiers, PenFeatures, PenSample, PenState, TouchPhase};
 
 use crate::tracker::PenTracker;
 use crate::{InjectError, PenSink, TouchPoint};
@@ -50,6 +50,21 @@ impl PortalPointerSink {
             pressed: false,
             fingers: HashMap::new(),
         }
+    }
+
+    /// Sends key strokes in order.
+    fn strokes(&self, strokes: &[crate::linux_keys::Stroke]) -> Result<(), InjectError> {
+        if !self.pointer.has_keyboard() {
+            return Err(InjectError::Unavailable(
+                "the desktop didn't grant keyboard control".into(),
+            ));
+        }
+        for &(code, down) in strokes {
+            if !self.pointer.key(i32::from(code.0), down) {
+                return Err(gone());
+            }
+        }
+        Ok(())
     }
 
     fn logical(&self, at: DesktopPoint) -> (f64, f64) {
@@ -147,6 +162,27 @@ impl PenSink for PortalPointerSink {
             }
         }
         Ok(())
+    }
+
+    fn keyboard(&self) -> bool {
+        self.pointer.has_keyboard()
+    }
+
+    fn type_text(&mut self, text: &str) -> Result<(), InjectError> {
+        let (strokes, skipped) = crate::linux_keys::text_strokes(text);
+        self.strokes(&strokes)?;
+        if skipped > 0 {
+            return Err(InjectError::Rejected(format!(
+                "typing on Linux covers the characters of the US layout; {skipped} other character(s) skipped"
+            )));
+        }
+        Ok(())
+    }
+
+    fn key(&mut self, key: Key, modifiers: Modifiers) -> Result<(), InjectError> {
+        let strokes = crate::linux_keys::key_strokes(key, modifiers)
+            .ok_or_else(|| crate::linux_keys::unknown_key(key))?;
+        self.strokes(&strokes)
     }
 
     fn scroll_end(&mut self) -> Result<(), InjectError> {
@@ -324,6 +360,40 @@ mod tests {
                 dy: 0.0,
                 finish: true
             }]
+        );
+    }
+
+    #[test]
+    fn typing_sends_key_codes_with_shift() {
+        let (p, mut rx) = ib_portal::Pointer::detached();
+        let mut sink = PortalPointerSink::new(p, 1.0);
+        sink.type_text("A").unwrap();
+        let shift = i32::from(evdev::KeyCode::KEY_LEFTSHIFT.0);
+        let a = i32::from(evdev::KeyCode::KEY_A.0);
+        assert_eq!(
+            drain(&mut rx),
+            vec![
+                PointerCmd::Key {
+                    code: shift,
+                    pressed: true
+                },
+                PointerCmd::Key {
+                    code: a,
+                    pressed: true
+                },
+                PointerCmd::Key {
+                    code: a,
+                    pressed: false
+                },
+                PointerCmd::Key {
+                    code: shift,
+                    pressed: false
+                },
+            ]
+        );
+        assert!(
+            sink.type_text("é").is_err(),
+            "skipped characters are reported"
         );
     }
 
