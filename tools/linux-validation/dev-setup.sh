@@ -24,7 +24,7 @@ sudo apt-get update -qq
 sudo apt-get install -y build-essential pkg-config git curl clang libclang-dev \
     libpipewire-0.3-dev libspa-0.2-dev libva-dev libxcb1-dev libxcb-shm0-dev libxcb-randr0-dev \
     libudev-dev intel-media-va-driver vainfo \
-    libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libssl-dev
+    libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libssl-dev gh
 
 command -v cargo >/dev/null || curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal -c clippy,rustfmt
 

@@ -30,6 +30,12 @@ args=(--protocol=anyconnect --user="$VPN_USER" --background --pid-file="$PIDFILE
 echo "Connecting to $VPN_SERVER as $VPN_USER; type your VPN password when asked."
 sudo openconnect "${args[@]}" "$VPN_SERVER" || exit 1
 sleep 3
+# Only Claude's API goes through the tunnel; crates.io, rustup, GitHub and apt work directly (and
+# faster) on the campus network. Skip with VPN_FULL=1.
+if [[ -z "${VPN_FULL:-}" ]]; then
+    sudo ip route del default dev tun0 2>/dev/null
+    sudo ip route replace 160.79.104.0/23 dev tun0
+fi
 code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 https://api.anthropic.com/)"
 if [[ "$code" != 403 && "$code" != 000 ]]; then
     echo "VPN up: api.anthropic.com is reachable."
