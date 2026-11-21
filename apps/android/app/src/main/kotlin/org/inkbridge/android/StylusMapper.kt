@@ -58,9 +58,20 @@ object StylusMapper {
             rotation = 0f,
             contact = contact,
             eraser = ev.getToolType(index) == MotionEvent.TOOL_TYPE_ERASER,
-            barrelButton = ev.buttonState and (MotionEvent.BUTTON_STYLUS_PRIMARY or MotionEvent.BUTTON_SECONDARY) != 0,
+            barrelButton = isBarrelPressed(ev.buttonState),
         )
     }
+
+    /**
+     * Whether a pen button is held. Pens differ in which button they report: the Tab Pen Plus
+     * sends BTN_STYLUS2 (BUTTON_STYLUS_SECONDARY); some report the mouse-style BUTTON_SECONDARY.
+     * The protocol has one barrel button, so any of them counts.
+     */
+    fun isBarrelPressed(buttonState: Int): Boolean =
+        buttonState and BARREL_BUTTONS != 0
+
+    private const val BARREL_BUTTONS =
+        MotionEvent.BUTTON_STYLUS_PRIMARY or MotionEvent.BUTTON_STYLUS_SECONDARY or MotionEvent.BUTTON_SECONDARY
 
     /** Polar (tilt from vertical, orientation) in radians → per-axis degrees. */
     fun cartesianTilt(tilt: Float, orientation: Float): Pair<Float, Float> {

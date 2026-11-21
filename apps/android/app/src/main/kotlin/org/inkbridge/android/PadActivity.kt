@@ -201,11 +201,10 @@ class PadActivity : ComponentActivity() {
         })
     }
 
-    /** A hardware keyboard types on the computer too. */
+    /** A hardware keyboard types on the computer too; Back, volume and other system keys stay here. */
     override fun onKeyDown(keyCode: Int, event: android.view.KeyEvent): Boolean {
-        if (keyCode == android.view.KeyEvent.KEYCODE_BACK) return super.onKeyDown(keyCode, event)
         val s = SessionHolder.session
-        if (s != null && s.keyboardAvailable() && keyboard.onKey(event)) return true
+        if (!event.isSystem && s != null && s.keyboardAvailable() && keyboard.onKey(event)) return true
         return super.onKeyDown(keyCode, event)
     }
 
