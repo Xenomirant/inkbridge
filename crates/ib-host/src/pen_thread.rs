@@ -303,6 +303,9 @@ fn emit(sink: &mut Box<dyn PenSink>, s: PenSample, region: Region) -> DesktopPoi
         x = at.x,
         y = at.y,
         p = s.pressure,
+        tilt_x = s.tilt_x,
+        tilt_y = s.tilt_y,
+        buttons = ?s.buttons,
         state = ?s.state,
         "sample"
     );

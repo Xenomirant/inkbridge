@@ -2,6 +2,7 @@ package org.inkbridge.android
 
 import android.graphics.RectF
 import android.os.Build
+import android.util.Log
 import android.view.MotionEvent
 import org.inkbridge.core.PenContact
 import org.inkbridge.core.StylusSample
@@ -19,6 +20,8 @@ import kotlin.math.tan
  * Windows and the W3C Pointer Events spec, uses Cartesian tilt per axis.
  */
 object StylusMapper {
+    /** Pen diagnostics: `adb shell setprop log.tag.InkbridgePen DEBUG`, then `adb logcat -s InkbridgePen`. */
+    private const val TAG = "InkbridgePen"
 
     fun isStylus(ev: MotionEvent, index: Int): Boolean {
         val t = ev.getToolType(index)
@@ -38,6 +41,14 @@ object StylusMapper {
         val out = ArrayList<StylusSample>(ev.historySize + 1)
         for (h in 0 until ev.historySize) out += sample(ev, index, h, area, contact)
         out += sample(ev, index, -1, area, contact)
+        if (Log.isLoggable(TAG, Log.DEBUG)) {
+            Log.d(
+                TAG,
+                "orientation=${ev.getAxisValue(MotionEvent.AXIS_ORIENTATION, index)} " +
+                    "tilt=${ev.getAxisValue(MotionEvent.AXIS_TILT, index)} " +
+                    "buttons=${ev.buttonState} -> tiltX=${out.last().tiltX} tiltY=${out.last().tiltY}",
+            )
+        }
         return out
     }
 

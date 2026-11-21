@@ -36,11 +36,14 @@ USB tethering):**
   session): pressure and hover work in Xournal++; pinch-zoom works through a second virtual device,
   a multitouch touchscreen ("Inkbridge Touch").
 - Known issues (evidence in `docs/validation/2026-11-20-linux-live-usb/`):
-  - **Tilt X is always 0, tilt Y only leans away.** The pen hardware reports both axes (±60°); the
-    host receives AXIS_ORIENTATION = 0 from the app, so all tilt lands on −Y. Next: log
-    AXIS_TILT/AXIS_ORIENTATION in the app on the TB331FC to see whether Android/ZUI or the app loses it.
-  - **The pen button doesn't reach the computer.** The Tab Pen Plus button is `BTN_STYLUS2`
-    (Android `BUTTON_STYLUS_SECONDARY`); `StylusMapper` only forwards PRIMARY/SECONDARY.
+  - **Tilt has no direction on the TB331FC.** The pen hardware reports both axes (±60°) and Android's
+    input reader computes the direction (`dumpsys input`, Last Cooked Touch: orientation sweeps
+    −π..π), but every MotionEvent the app gets has AXIS_ORIENTATION = 0 (2026-11-21, 3040 events,
+    `adb shell setprop log.tag.InkbridgePen DEBUG`). The loss is between the input reader and the
+    app's window, so in Android/ZUI; an app can't get it back. The tilt angle is right, so pens tilt
+    by the right amount, always leaning away from the user (−Y).
+  - ~~The pen button doesn't reach the computer~~: fixed 2026-11-21 (`BUTTON_STYLUS_SECONDARY`),
+    checked with the Tab Pen Plus on the Windows host.
   - A session that starts over Wi-Fi stays there when USB tethering comes up (seen when QUIC over
     the cable timed out at connect). The host can dial the tablet over the cable during the session
     (tried: every 5 s, handing the connection to the accept loop, which replaces the Wi-Fi session),

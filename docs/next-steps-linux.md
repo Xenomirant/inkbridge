@@ -5,8 +5,8 @@ Read `docs/status.md` (M3 Linux block: verified, known issues, to do) and `docs/
 ## In WSL (Android SDK there), in this order
 1. ~~Pen button~~ done 2026-11-21: `StylusMapper.isBarrelPressed` also takes BUTTON_STYLUS_SECONDARY
    (the Tab Pen Plus's BTN_STYLUS2). Still to check with the pen on a host.
-2. Tilt X always 0: log AXIS_TILT/AXIS_ORIENTATION on the TB331FC; the hardware reports both tilt
-   axes (+-60 deg), the app receives orientation 0. If Android/ZUI loses it, send tilt magnitude only.
+2. Tilt X always 0: measured 2026-11-21, Android/ZUI hands the app orientation 0 although its input
+   reader has the direction (status.md). Only the angle arrives; the direction can't be recovered.
 3. Wi-Fi session -> USB: the app listens for the host's USB dial only while connecting
    (`Session.acceptUsb`); keep the listener during a Wi-Fi session, then add the host side
    (dial every 5 s, hand the connection to the accept loop; see status.md).
