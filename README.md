@@ -1,49 +1,72 @@
-# Inkbridge
+<p align="center">
+  <img src="apps/desktop/icons/128x128@2x.png" width="96" alt="Inkbridge">
+</p>
 
-Use a pen tablet as a pen display for Windows, macOS and Linux — over Wi-Fi or a USB cable, with native pressure- and tilt-sensitive pen input, and without admin rights, drivers or adb on the default path. Free and open source (GPL-3.0-or-later), no subscriptions.
+<h1 align="center">Inkbridge</h1>
 
-**Status:** usable on Windows and macOS with an Android tablet (tested with a Lenovo Xiaoxin Pad
-2024); Linux is implemented but not yet tried on a real desktop. No installers yet: build from source.
-See [status](docs/status.md) and the [plan](docs/plan.md).
+<p align="center">
+  Turn an Android tablet into a pen display for your computer.<br>
+  Pressure and tilt, about 30 ms latency, over Wi-Fi or USB. Free and open source.
+</p>
 
-The tablet shows the computer's screen and its pen draws there with pressure and tilt. Two-finger
-scrolling and zoom, the tablet's keyboard types on the computer, and the tablet can show any of the
-computer's displays or become an extra one.
+<p align="center">
+  <a href="https://github.com/Xenomirant/inkbridge/actions/workflows/ci.yml"><img src="https://github.com/Xenomirant/inkbridge/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPL--3.0-blue" alt="License: GPL-3.0"></a>
+  <img src="https://img.shields.io/badge/computer-Windows%20%7C%20macOS%20%7C%20Linux-informational" alt="Windows, macOS, Linux">
+  <img src="https://img.shields.io/badge/tablet-Android%2011%2B-3ddc84" alt="Android 11+">
+</p>
 
-| | Windows | macOS | Linux |
+The tablet shows your computer's screen, and its pen works there like a real pen: pressure, tilt,
+eraser and button, in any app that supports one. No drivers, admin rights or developer mode, no
+account, no subscription.
+
+## Features
+- **Native pen input** with pressure and tilt
+- **Low latency**: hardware video encoding on the computer, hardware decoding on the tablet
+- **Wi-Fi or USB cable**: a session moves onto the cable as soon as it's plugged in
+- **Extra screen**: use the tablet as another display, or show any of your displays
+- **Keyboard and gestures**: type from the tablet, scroll and zoom with two fingers
+- **Private**: pairing by QR code, encrypted connections, no cloud
+
+## Supported platforms
+
+| | Windows 10/11 | macOS 12.3+ | Linux |
 |---|---|---|---|
-| Pen | pressure, tilt, eraser, barrel button | pressure, tilt, rotation, eraser, barrel button | pressure with uinput (Advanced, one admin prompt); else a plain pointer (Wayland portal) |
-| Screen | Media Foundation (hardware) | VideoToolbox (hardware) | VA-API; X11 or the Wayland portal |
-| Wi-Fi | yes | yes | yes |
-| USB cable | tethering, or adb (Advanced) | adb (Advanced): macOS has no RNDIS | tethering, or adb (Advanced) |
-| Choose a display | yes | yes | main display only |
-| Tablet as an extra screen | Advanced: a virtual display driver (one admin prompt) | yes, nothing to install | not yet |
-| Keyboard from the tablet | yes | yes | not yet |
-| Tray / menu-bar app | yes | yes | builds, not yet tried |
-| Permissions | none | Screen Recording, Accessibility (asked when needed) | screen sharing portal |
-| Screen latency (median) | 30 ms over USB | 34 ms over Wi-Fi, 33 ms over USB | not measured |
+| Pen pressure and tilt | ✓ | ✓ | ✓ with the uinput option¹ |
+| Wi-Fi / USB cable | ✓ / ✓ | ✓ / with adb¹ | ✓ / ✓ |
+| Extra screen | ✓ with a display driver¹ | ✓ | ✓ on GNOME |
+| Keyboard from the tablet | ✓ | ✓ | ✓ |
+| Screen latency (median) | 30 ms | 33 ms | 36 ms |
 
-Latency figures and how they were measured: [docs/latency.md](docs/latency.md). Client: Android 11
-or later; iPad later.
+¹ Optional setup, off by default.
+How latency is measured: [docs/latency.md](docs/latency.md). iPad support is planned.
 
-## Documentation
-- [Architecture](docs/architecture.md) — design, permissions, platform compatibility
-- [Plan](docs/plan.md) — milestones M0–M6
-- [Status](docs/status.md) — what works, what was checked, open issues
-- [Latency](docs/latency.md) — measured figures
-- [Protocol](docs/protocol.md) — wire format
-- [Decision records](docs/adr/)
-- [Contributing](CONTRIBUTING.md) · [Security](SECURITY.md)
+## Getting started
+Prebuilt downloads come with the first release; until then, [build from source](#building).
+
+1. Start **Inkbridge** on the computer. It lives in the tray (menu bar on macOS).
+2. Click **Pair a tablet** and scan the QR code with the Inkbridge app on the tablet.
+3. Draw. Next time, tap the computer in the app; with the USB cable and USB tethering on, the
+   tablet connects by itself.
 
 ## Building
-```sh
-cargo test --workspace                 # toolchain version is pinned in rust-toolchain.toml
-cargo run --release -p ib-host -- --help   # the host from the command line
-cd apps/desktop && cargo run --release     # the tray / menu-bar app
-cd apps/android && ./gradlew assembleDebug # the Android app (needs the NDK and cargo-ndk)
-```
-Use release builds when judging latency; a debug build makes the software encoder about 30 times
-slower.
+Needs Rust (the version is pinned in `rust-toolchain.toml`); the tablet app also needs the Android
+SDK, NDK and `cargo-ndk`.
 
-## Licence
-GPL-3.0-or-later, with an additional permission for app-store distribution — see [`LICENSE`](LICENSE) and [`LICENSE-APPSTORE-EXCEPTION.md`](LICENSE-APPSTORE-EXCEPTION.md).
+```sh
+cd apps/desktop && cargo run --release        # the desktop app
+cd apps/android && ./gradlew assembleDebug    # the Android app
+cargo test --workspace                        # the tests
+```
+
+On Linux, install the development packages listed in [the CI workflow](.github/workflows/ci.yml).
+
+## Contributing
+Issues and pull requests are welcome; see [CONTRIBUTING.md](CONTRIBUTING.md). Report security
+problems privately, as [SECURITY.md](SECURITY.md) describes. Design notes are in [docs/](docs/):
+[architecture](docs/architecture.md), [protocol](docs/protocol.md), [status](docs/status.md) and
+[decision records](docs/adr/).
+
+## License
+[GPL-3.0-or-later](LICENSE), with an [additional permission](LICENSE-APPSTORE-EXCEPTION.md) for
+app-store distribution.

@@ -20,7 +20,3 @@ Read `docs/status.md` (M3 Linux block: verified, known issues, to do) and `docs/
 - Then: desktop tray app (never run on Linux), re-measure fps/latency with the NVIDIA driver
   (the live session's ~31 fps cap came from NVK/zink read-back), two real monitors, non-US text.
 - No-setup pointer/touch on the extra screen waits for flatpak/xdg-desktop-portal#2078.
-
-## Network notes (campus VPN)
-- The AnyConnect VPN is needed for Claude only: route just 160.79.104.0/23 via tun0 and delete
-  the `default dev tun0` route; crates.io, rustup and GitHub work directly.
