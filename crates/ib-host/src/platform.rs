@@ -132,8 +132,18 @@ pub fn raise_thread_priority() {
 /// portal stream granted at startup, otherwise the OS default.
 pub fn capture_source() -> Result<Box<dyn ib_capture::ScreenSource>, ib_capture::CaptureError> {
     #[cfg(all(target_os = "linux", feature = "wayland"))]
-    if let Some(d) = crate::wayland::desktop() {
-        return Ok(d.capture());
+    {
+        if chosen_display() == Some(LINUX_EXTRA_ID)
+            && let Some((extra, _)) = LINUX_EXTRA
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .as_ref()
+        {
+            return Ok(extra.capture());
+        }
+        if let Some(d) = crate::wayland::desktop() {
+            return Ok(d.capture());
+        }
     }
     ib_capture::platform_source()
 }
@@ -198,13 +208,27 @@ pub fn pen_sink(desktop: Region) -> Result<Box<dyn ib_inject::PenSink>, ib_injec
     }
     let sink = ib_inject::platform_sink(desktop);
     #[cfg(all(target_os = "linux", feature = "wayland"))]
-    if sink.is_err()
-        && let Some(s) =
-            crate::wayland::desktop().and_then(crate::wayland::WaylandDesktop::pointer_sink)
     {
-        tracing::info!("pen works as a mouse (no pressure); run --setup-uinput for pressure");
-        return Ok(s);
+        let sink = match sink {
+            Ok(s) => Ok(s),
+            Err(e) => match crate::wayland::desktop()
+                .and_then(crate::wayland::WaylandDesktop::pointer_sink)
+            {
+                Some(s) => {
+                    tracing::info!(
+                        "pen works as a mouse (no pressure); run --setup-uinput for pressure"
+                    );
+                    Ok(s)
+                }
+                None => Err(e),
+            },
+        };
+        // Pen, touch and keys follow the display shown (the extra screen).
+        sink.map(|s| {
+            Box::new(crate::linux_sink::DisplaySink::new(s)) as Box<dyn ib_inject::PenSink>
+        })
     }
+    #[cfg(not(all(target_os = "linux", feature = "wayland")))]
     sink
 }
 
@@ -240,7 +264,7 @@ pub fn switch_display(index: usize) -> anyhow::Result<ib_capture::Display> {
     };
     if !display.primary {
         anyhow::ensure!(
-            cfg!(any(target_os = "macos", windows)),
+            cfg!(any(target_os = "macos", windows)) || is_extra_display(display.id),
             "choosing a display works on macOS and Windows only so far"
         );
     }
@@ -280,12 +304,34 @@ pub fn displays() -> Vec<ib_capture::Display> {
     }
     #[cfg(not(target_os = "macos"))]
     {
-        vec![ib_capture::Display {
+        #[allow(unused_mut, reason = "the extra screen is added on Linux only")]
+        let mut all = vec![ib_capture::Display {
             id: 0,
             name: "Main display".into(),
             bounds: primary_display(),
             primary: true,
-        }]
+        }];
+        // The extra screen: a stream of its own, so its bounds start at 0,0.
+        #[cfg(all(target_os = "linux", feature = "wayland"))]
+        if let Some((extra, _)) = LINUX_EXTRA
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+        {
+            let (width, height) = extra.size();
+            all.push(ib_capture::Display {
+                id: LINUX_EXTRA_ID,
+                name: EXTRA_NAME.into(),
+                bounds: Region {
+                    x: 0,
+                    y: 0,
+                    width,
+                    height,
+                },
+                primary: false,
+            });
+        }
+        all
     }
 }
 
@@ -306,6 +352,30 @@ type VirtualDisplay = ib_capture::WindowsVirtualDisplay;
 /// The extra display the tablet is, while it is one.
 #[cfg(any(target_os = "macos", windows))]
 static EXTRA: std::sync::Mutex<Option<(VirtualDisplay, ExtraScreen)>> = std::sync::Mutex::new(None);
+/// The extra screen on Linux (Wayland): a virtual monitor with its own
+/// portal session.
+#[cfg(all(target_os = "linux", feature = "wayland"))]
+static LINUX_EXTRA: std::sync::Mutex<Option<(crate::wayland::ExtraMonitor, ExtraScreen)>> =
+    std::sync::Mutex::new(None);
+/// Its id in [`displays`] (the main display is 0).
+#[cfg(all(target_os = "linux", feature = "wayland"))]
+const LINUX_EXTRA_ID: u64 = 1;
+
+/// Whether `id` is the extra screen.
+pub fn is_extra_display(id: u64) -> bool {
+    extra_display_id() == Some(id)
+}
+
+/// Linux: pen (as a mouse), touch and keyboard on the extra screen.
+#[cfg(all(target_os = "linux", feature = "wayland"))]
+pub fn extra_input_sink() -> Option<Box<dyn ib_inject::PenSink>> {
+    LINUX_EXTRA
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .as_ref()
+        .and_then(|(extra, _)| extra.input_sink())
+}
+
 /// Whether new sessions should make the tablet an extra display.
 static EXTEND_WANTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 /// Whether that display should be the pixel-for-pixel kind.
@@ -325,7 +395,19 @@ fn extra_display_id() -> Option<u64> {
             .as_ref()
             .map(|(d, _)| u64::from(d.id()))
     }
-    #[cfg(not(any(target_os = "macos", windows)))]
+    #[cfg(all(target_os = "linux", feature = "wayland"))]
+    {
+        LINUX_EXTRA
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_some()
+            .then_some(LINUX_EXTRA_ID)
+    }
+    #[cfg(not(any(
+        target_os = "macos",
+        windows,
+        all(target_os = "linux", feature = "wayland")
+    )))]
     {
         None
     }
@@ -365,7 +447,15 @@ pub fn extend_supported() -> bool {
     {
         VirtualDisplay::supported()
     }
-    #[cfg(not(any(target_os = "macos", windows)))]
+    #[cfg(all(target_os = "linux", feature = "wayland"))]
+    {
+        crate::wayland::extra_screen_supported()
+    }
+    #[cfg(not(any(
+        target_os = "macos",
+        windows,
+        all(target_os = "linux", feature = "wayland")
+    )))]
     {
         false
     }
@@ -429,7 +519,19 @@ pub fn extra_screen() -> Option<ExtraScreen> {
             .as_ref()
             .map(|(_, made_for)| *made_for)
     }
-    #[cfg(not(any(target_os = "macos", windows)))]
+    #[cfg(all(target_os = "linux", feature = "wayland"))]
+    {
+        LINUX_EXTRA
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .map(|(_, made_for)| *made_for)
+    }
+    #[cfg(not(any(
+        target_os = "macos",
+        windows,
+        all(target_os = "linux", feature = "wayland")
+    )))]
     {
         None
     }
@@ -483,10 +585,38 @@ pub fn extend(wanted: ExtraScreen) -> anyhow::Result<usize> {
             std::thread::sleep(std::time::Duration::from_millis(50));
         }
     }
-    #[cfg(not(any(target_os = "macos", windows)))]
+    #[cfg(all(target_os = "linux", feature = "wayland"))]
+    {
+        let (width, height) = wanted.area;
+        anyhow::ensure!(width > 0 && height > 0, "the tablet's size isn't known yet");
+        let mut extra = LINUX_EXTRA
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        match extra.as_mut() {
+            Some((monitor, made_for)) if monitor.size() == (width, height) => *made_for = wanted,
+            _ => {
+                // Another shape: the desktop makes a new virtual monitor
+                // (the old one goes first, so its windows move back).
+                *extra = None;
+                *extra = Some((crate::wayland::ExtraMonitor::new(width, height)?, wanted));
+            }
+        }
+        drop(extra);
+        displays()
+            .into_iter()
+            .position(|d| d.id == LINUX_EXTRA_ID)
+            .ok_or_else(|| anyhow::anyhow!("the extra screen didn't appear"))
+    }
+    #[cfg(not(any(
+        target_os = "macos",
+        windows,
+        all(target_os = "linux", feature = "wayland")
+    )))]
     {
         let _ = wanted;
-        anyhow::bail!("using the tablet as an extra screen works on macOS and Windows only so far")
+        anyhow::bail!(
+            "using the tablet as an extra screen works on macOS, Windows and GNOME only so far"
+        )
     }
 }
 
@@ -503,6 +633,21 @@ pub fn stop_extending() {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             if *chosen == Some(u64::from(display.id())) {
+                *chosen = None;
+            }
+        }
+    }
+    #[cfg(all(target_os = "linux", feature = "wayland"))]
+    {
+        let gone = LINUX_EXTRA
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        if gone.is_some() {
+            let mut chosen = DISPLAY
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if *chosen == Some(LINUX_EXTRA_ID) {
                 *chosen = None;
             }
         }

@@ -50,6 +50,26 @@ will add them once compositors support it.
 
 On X11 without uinput there is no pen input; run `--setup-uinput`.
 
+## The tablet as an extra screen (GNOME)
+
+Choose "Use this tablet as an extra screen" in the tablet's display menu. The host asks the
+screen-cast portal for a **virtual monitor** (source type `VIRTUAL`) of the tablet's picture size, in
+a remote-desktop session of its own; GNOME adds it next to the other monitors (`Meta-0`) and removes
+it when the host leaves it (15 s after the tablet disconnects, as on the other hosts). The desktop
+asks once; the token in `wayland-extra-screen-token` skips the dialog later. Needs no driver and no
+private interface; desktops whose portal lacks virtual sources don't offer the menu entry.
+
+- **With the uinput option** the pen keeps its pressure there: the host points GNOME's mapping of its
+  virtual pen and touchscreen (`org.gnome.desktop.peripherals.tablet` / `.touchscreen`, at
+  `…/tablets/494b:0001/` and `…/touchscreens/494b:0002/`) at the virtual monitor, and back at the
+  primary monitor when the main display is shown again; it resets them when it exits.
+- **Without it**, input goes to the extra session, but xdg-desktop-portal (1.21 and, as of
+  2026-11, upstream) refuses every absolute position on a virtual stream with "Invalid position":
+  `check_position()` compares against the stream's size, which backends don't report for virtual
+  streams ([#2077](https://github.com/flatpak/xdg-desktop-portal/issues/2077), fix pending in
+  [#2078](https://github.com/flatpak/xdg-desktop-portal/pull/2078)). Taps and keys work there;
+  moving the pointer and touch don't, until that fix ships.
+
 ## Hardware encoding (VA-API)
 
 When the GPU's VA-API driver can encode H.264 (Intel `iHD`/`i965`, AMD `radeonsi`, Mesa `d3d12` on
@@ -116,5 +136,6 @@ release as the live system.
 | Pen without setup | — | ✅ pointer only (RemoteDesktop portal) |
 | Two-finger scroll | ✅ uinput hi-res wheel | ✅ uinput, or portal smooth scroll |
 | Pinch-zoom in apps | ✅ uinput touchscreen | ✅ uinput touchscreen, or portal touchscreen (no-setup path) |
+| Extra screen | — | ✅ GNOME virtual monitor (pressure with uinput; no-setup path limited, see above) |
 | Keyboard from the tablet | ✅ uinput keyboard (US-layout text) | ✅ uinput keyboard, or the portal keyboard (no-setup path) |
 | USB (tethering) | ✅ | ✅ |

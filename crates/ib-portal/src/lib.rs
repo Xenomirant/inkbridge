@@ -59,6 +59,9 @@ pub struct Request {
     pub restore_token: Option<String>,
     /// Also ask for pointer control (needed when uinput isn't set up).
     pub pointer: bool,
+    /// A new virtual monitor instead of an existing one (the tablet as an
+    /// extra screen); its size is the one the PipeWire stream negotiates.
+    pub virtual_monitor: bool,
 }
 
 /// The monitor stream granted by the desktop.
@@ -107,6 +110,10 @@ pub enum PointerCmd {
     MoveTo {
         x: f64,
         y: f64,
+    },
+    MoveBy {
+        dx: f64,
+        dy: f64,
     },
     Button {
         code: i32,
@@ -174,6 +181,11 @@ impl Pointer {
         self.keyboard
     }
 
+    /// Relative move, in logical pixels.
+    pub fn move_by(&self, dx: f64, dy: f64) -> bool {
+        self.tx.send(PointerCmd::MoveBy { dx, dy }).is_ok()
+    }
+
     /// Presses or releases a key (an evdev key code).
     pub fn key(&self, code: i32, pressed: bool) -> bool {
         self.tx.send(PointerCmd::Key { code, pressed }).is_ok()
@@ -226,6 +238,25 @@ impl Drop for SessionThread {
             let _ = s.send(());
         }
     }
+}
+
+/// Whether the desktop's screen-cast portal can create virtual monitors
+/// (GNOME can; the tablet as an extra screen needs it). Asked once.
+pub fn virtual_monitors_available() -> bool {
+    static AVAILABLE: OnceLock<bool> = OnceLock::new();
+    *AVAILABLE.get_or_init(|| {
+        let Ok(rt) = runtime() else { return false };
+        let (tx, rx) = mpsc::sync_channel(1);
+        rt.spawn(async move {
+            let types = match Screencast::new().await {
+                Ok(proxy) => proxy.available_source_types().await.ok(),
+                Err(_) => None,
+            };
+            let _ = tx.send(types.is_some_and(|t| t.contains(SourceType::VIRTUAL)));
+        });
+        rx.recv_timeout(std::time::Duration::from_secs(3))
+            .unwrap_or(false)
+    })
 }
 
 /// Asks the desktop for one monitor (cursor drawn into the frames) and,
@@ -320,7 +351,11 @@ async fn run(req: Request, reply: Reply, stop: tokio::sync::oneshot::Receiver<()
 fn select_sources_options(req: &Request, persist: bool) -> SelectSourcesOptions {
     let o = SelectSourcesOptions::default()
         .set_cursor_mode(CursorMode::EMBEDDED)
-        .set_sources(SourceType::MONITOR)
+        .set_sources(if req.virtual_monitor {
+            SourceType::VIRTUAL
+        } else {
+            SourceType::MONITOR
+        })
         .set_multiple(false);
     if persist {
         o.set_persist_mode(PersistMode::ExplicitlyRevoked)
@@ -481,6 +516,16 @@ async fn pump(
                     )
                     .await
             }
+            PointerCmd::MoveBy { dx, dy } => {
+                remote
+                    .notify_pointer_motion(
+                        session,
+                        dx,
+                        dy,
+                        ashpd::desktop::remote_desktop::NotifyPointerMotionOptions::default(),
+                    )
+                    .await
+            }
             PointerCmd::Button { code, pressed } => {
                 let state = if pressed {
                     ashpd::desktop::remote_desktop::KeyState::Pressed
@@ -544,10 +589,12 @@ async fn pump(
                     .await
             }
         };
-        if let Err(e) = r
-            && !std::mem::replace(&mut warned, true)
-        {
-            tracing::warn!("portal rejected an input event: {e}");
+        if let Err(e) = r {
+            if std::mem::replace(&mut warned, true) {
+                tracing::debug!(?cmd, "portal rejected an input event: {e:?}");
+            } else {
+                tracing::warn!(?cmd, "portal rejected an input event: {e:?}");
+            }
         }
     }
 }

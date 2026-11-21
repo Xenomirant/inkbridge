@@ -25,7 +25,7 @@ mod windows;
 mod windows_keys;
 
 #[cfg(target_os = "linux")]
-pub use linux::UinputPenSink;
+pub use linux::{DEVICE_VENDOR, PEN_PRODUCT, TOUCH_PRODUCT, UinputPenSink};
 #[cfg(target_os = "macos")]
 pub use macos::{MacPenSink, main_display, pen_access_granted};
 #[cfg(all(target_os = "linux", feature = "wayland"))]

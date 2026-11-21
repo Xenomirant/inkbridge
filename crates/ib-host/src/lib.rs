@@ -6,6 +6,8 @@
 
 pub mod adb;
 pub mod clock;
+#[cfg(all(target_os = "linux", feature = "wayland"))]
+pub mod linux_sink;
 pub mod pairing_page;
 pub mod pen_thread;
 pub mod platform;

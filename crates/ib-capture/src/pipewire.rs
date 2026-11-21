@@ -87,8 +87,18 @@ impl PipeWireScreenSource {
     /// Starts receiving the portal stream. Keep the [`ib_portal::Grant`]
     /// alive for as long as this source is used.
     pub fn new(stream: ib_portal::Stream) -> Result<Self, CaptureError> {
+        Self::new_sized(stream, None)
+    }
+
+    /// Like [`new`](Self::new), asking for frames of exactly `size`: a
+    /// virtual monitor takes the size its stream negotiates.
+    pub fn new_sized(
+        stream: ib_portal::Stream,
+        size: Option<(u32, u32)>,
+    ) -> Result<Self, CaptureError> {
         let slot: Slot = Arc::default();
         let (quit, quit_rx) = pw::channel::channel();
+        let wanted = size;
         let ib_portal::Stream {
             fd, node_id, size, ..
         } = stream;
@@ -96,7 +106,7 @@ impl PipeWireScreenSource {
         let thread = std::thread::Builder::new()
             .name("inkbridge-pipewire".into())
             .spawn(move || {
-                if let Err(e) = run(fd, node_id, &thread_slot, quit_rx) {
+                if let Err(e) = run(fd, node_id, wanted, &thread_slot, quit_rx) {
                     let (m, cv) = &*thread_slot;
                     m.lock().unwrap_or_else(PoisonError::into_inner).error = Some(e.to_string());
                     cv.notify_all();
@@ -229,7 +239,27 @@ fn crop(src: &[u8], stride: usize, region: Region) -> Option<Vec<u8>> {
 
 /// Formats offered to the compositor: both are BGRA in memory, which is
 /// what the encoders take. (GNOME, KDE and wlroots all offer BGRx.)
-fn format_params() -> Result<Vec<u8>, CaptureError> {
+fn format_params(fixed: Option<(u32, u32)>) -> Result<Vec<u8>, CaptureError> {
+    let (default, min, max) = match fixed {
+        Some((width, height)) => {
+            let r = spa::utils::Rectangle { width, height };
+            (r, r, r)
+        }
+        None => (
+            spa::utils::Rectangle {
+                width: 1920,
+                height: 1080,
+            },
+            spa::utils::Rectangle {
+                width: 1,
+                height: 1,
+            },
+            spa::utils::Rectangle {
+                width: 8192,
+                height: 8192,
+            },
+        ),
+    };
     let obj = spa::pod::object!(
         spa::utils::SpaTypes::ObjectParamFormat,
         spa::param::ParamType::EnumFormat,
@@ -257,18 +287,9 @@ fn format_params() -> Result<Vec<u8>, CaptureError> {
             Choice,
             Range,
             Rectangle,
-            spa::utils::Rectangle {
-                width: 1920,
-                height: 1080
-            },
-            spa::utils::Rectangle {
-                width: 1,
-                height: 1
-            },
-            spa::utils::Rectangle {
-                width: 8192,
-                height: 8192
-            }
+            default,
+            min,
+            max
         ),
         // Variable rate: 0/1 lets the compositor send frames only on change.
         spa::pod::property!(
@@ -294,6 +315,7 @@ fn format_params() -> Result<Vec<u8>, CaptureError> {
 fn run(
     fd: std::os::fd::OwnedFd,
     node_id: u32,
+    size: Option<(u32, u32)>,
     slot: &Slot,
     quit: pw::channel::Receiver<()>,
 ) -> Result<(), CaptureError> {
@@ -382,7 +404,7 @@ fn run(
         .register()
         .map_err(failed)?;
 
-    let params = format_params()?;
+    let params = format_params(size)?;
     let mut params = [Pod::from_bytes(&params).ok_or_else(|| failed("bad format pod"))?];
     stream
         .connect(

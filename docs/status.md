@@ -53,7 +53,12 @@ USB tethering):**
   US layout's characters, others are skipped (Linux injects keys, not characters).
 - The keyboard also works on the no-setup portal path (the RemoteDesktop keyboard, same mapping).
   `--remove-uinput-setup` left the user's access on `/dev/uinput` until a reboot; it now clears it.
-- Still to do: the desktop app. The picture in portrait
+- **Extra screen on GNOME (2026-11-21):** the portal's virtual monitor (no driver, no private API),
+  1920x1088 for the TB331FC (its decoder's limit). With uinput: pen with pressure, touch and keys on
+  it, checked with Xournal++. Without uinput only taps and keys work there: xdg-desktop-portal
+  rejects absolute positions on virtual streams (upstream #2077/#2078, see `docs/linux.md`).
+- Still to do: the desktop app; latency on the extra screen; the no-setup pointer there (a
+  relative-motion workaround, or wait for the portal fix). The picture in portrait
   is upscaled (900x1440 of the monitor onto 1200x1920); the extra screen will fix it.
 
 ## In progress — M4 macOS host
