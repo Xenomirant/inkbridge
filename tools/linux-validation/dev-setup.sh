@@ -15,6 +15,9 @@ else
 fi
 grep -q '.local/bin' "$HOME/.bashrc" || echo 'export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"' >>"$HOME/.bashrc"
 export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
+# crates.io over HTTP/2 stalled on the campus network.
+grep -q CARGO_HTTP_MULTIPLEXING "$HOME/.bashrc" || echo "export CARGO_HTTP_MULTIPLEXING=false" >>"$HOME/.bashrc"
+export CARGO_HTTP_MULTIPLEXING=false
 
 sudo add-apt-repository -y universe >/dev/null 2>&1
 sudo apt-get update -qq
