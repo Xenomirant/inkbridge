@@ -46,11 +46,12 @@ USB tethering):**
     trusted from then on (`TiltDirection`).
   - ~~The pen button doesn't reach the computer~~: fixed 2026-11-21 (`BUTTON_STYLUS_SECONDARY`),
     checked with the Tab Pen Plus on the Windows host.
-  - A session that starts over Wi-Fi stays there when USB tethering comes up (seen when QUIC over
-    the cable timed out at connect). The host can dial the tablet over the cable during the session
-    (tried: every 5 s, handing the connection to the accept loop, which replaces the Wi-Fi session),
-    but the app only listens for that dial while connecting (`Session.acceptUsb`). Needs the app to
-    keep its USB listener open during a Wi-Fi session; then the host part can go in.
+  - ~~A session that starts over Wi-Fi stays there when USB tethering comes up~~ (2026-11-21): during
+    a Wi-Fi session the host dials that tablet over a tethering link every 5 s and hands the
+    connection to the accept loop, which ends the Wi-Fi session; the pad keeps a USB listener open
+    meanwhile (`PadActivity.watchUsb`) and carries on over the cable. Listeners take turns on the
+    port (`UsbLink.listening`), and a reconnect started by the closing Wi-Fi session stands down.
+    Covered by `a_wifi_session_moves_to_the_usb_cable`; not yet tried with a real cable.
 - `--adb` works: `adb reverse` set up by itself, the tablet connects over the cable (TCP), 36 ms.
 - VA-API hardware test (`cargo test -p ib-encode --features vaapi -- --ignored`) passes on the iGPU.
 - Keyboard from the tablet with the uinput option: a third virtual device ("Inkbridge Keyboard").

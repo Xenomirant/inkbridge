@@ -93,12 +93,15 @@ class MainActivity : ComponentActivity() {
                     runOnUiThread { if (!busy) status.text = "USB cable connected — waiting for the computer…" }
                 }
                 val code = hosts[turn++ % hosts.size].code
-                val session = runCatching {
-                    Session.acceptUsb(
-                        code, identity, deviceName(), ip, 2000u,
-                        VideoDecoder.screen(metrics.widthPixels, metrics.heightPixels),
-                    )
-                }.getOrNull() ?: continue
+                val session = synchronized(UsbLink.listening) {
+                    if (!usbWatching) return@thread
+                    runCatching {
+                        Session.acceptUsb(
+                            code, identity, deviceName(), ip, 2000u,
+                            VideoDecoder.screen(metrics.widthPixels, metrics.heightPixels),
+                        )
+                    }.getOrNull()
+                } ?: continue
                 usbWatching = false
                 runOnUiThread { onConnected(session, code) }
             }

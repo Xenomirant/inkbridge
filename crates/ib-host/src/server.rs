@@ -16,6 +16,10 @@ use crate::pen_thread::PenInput;
 use crate::touch::TouchMapping;
 use crate::video::VideoPipeline;
 
+/// How often a tablet in a Wi-Fi session is dialled over a USB tethering
+/// link, to move the session onto the cable.
+const USB_UPGRADE_EVERY: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// Encoded frames waiting for the network. Small on purpose: a deep queue is
 /// latency; when it's full the pipeline skips to a keyframe instead.
 const VIDEO_QUEUE: usize = 3;
@@ -156,6 +160,10 @@ pub struct Host {
     /// Bounds of the display being shown; the tablet can change it.
     display: std::sync::Mutex<Region>,
     usb_tip_shown: std::sync::atomic::AtomicBool,
+    /// Tablets reached by dialling over USB, handed to the accept loop,
+    /// which runs their session (or moves the running one onto the cable).
+    dialed_tx: tokio::sync::mpsc::Sender<Connection>,
+    dialed_rx: Mutex<tokio::sync::mpsc::Receiver<Connection>>,
 }
 
 impl Host {
@@ -181,6 +189,7 @@ impl Host {
             other => other?,
         };
         let display = std::sync::Mutex::new(config.region);
+        let (dialed_tx, dialed_rx) = tokio::sync::mpsc::channel(1);
         Ok(Arc::new(Self {
             status: tokio::sync::watch::Sender::new(HostStatus::default()),
             link: std::sync::Mutex::new(None),
@@ -192,6 +201,8 @@ impl Host {
             session: Mutex::new(()),
             display,
             usb_tip_shown: std::sync::atomic::AtomicBool::new(false),
+            dialed_tx,
+            dialed_rx: Mutex::new(dialed_rx),
             pen,
         }))
     }
@@ -278,7 +289,7 @@ impl Host {
     /// Serves tablets until the endpoint closes: tablets connecting over
     /// Wi-Fi, and tablets on USB tethering, which this host dials.
     pub async fn run(self: Arc<Self>, on_paired: impl Fn(&str) + Send + Sync) {
-        tokio::join!(self.accept_loop(&on_paired), self.usb_loop(&on_paired));
+        tokio::join!(self.accept_loop(&on_paired), self.usb_loop());
     }
 
     async fn accept_loop(&self, on_paired: &(impl Fn(&str) + Send + Sync)) {
@@ -287,20 +298,26 @@ impl Host {
         let mut accept = Box::pin(self.endpoint.accept());
         // A tablet that connected while another session was running.
         let mut waiting: Option<Connection> = None;
+        let mut dialed = self.dialed_rx.lock().await;
         loop {
             let conn = if let Some(conn) = waiting.take() {
                 conn
             } else {
-                let Some(incoming) = accept.as_mut().await else {
-                    return;
-                };
-                accept.set(self.endpoint.accept());
-                match incoming {
-                    Ok(conn) => conn,
-                    Err(e) => {
-                        log_failed_attempt(&e);
-                        continue;
+                tokio::select! {
+                    incoming = accept.as_mut() => {
+                        let Some(incoming) = incoming else {
+                            return;
+                        };
+                        accept.set(self.endpoint.accept());
+                        match incoming {
+                            Ok(conn) => conn,
+                            Err(e) => {
+                                log_failed_attempt(&e);
+                                continue;
+                            }
+                        }
                     }
+                    Some(conn) = dialed.recv() => conn,
                 }
             };
             let _slot = self.session.lock().await;
@@ -312,29 +329,37 @@ impl Host {
             let session = self.run_session(&conn, kind, on_paired);
             tokio::pin!(session);
             loop {
-                let incoming = tokio::select! {
+                let new = tokio::select! {
                     () = &mut session => break,
-                    incoming = accept.as_mut() => incoming,
-                };
-                let Some(incoming) = incoming else {
-                    session.await;
-                    return;
-                };
-                accept.set(self.endpoint.accept());
-                match incoming {
-                    Ok(new) => {
-                        // The same tablet again: its old session is dead
-                        // (app restarted, network changed) even if the idle
-                        // timeout hasn't noticed yet. Don't make it wait.
-                        if new.peer_fingerprint() == conn.peer_fingerprint() {
-                            tracing::info!("the tablet reconnected, ending its previous session");
-                            conn.close("replaced by a new connection");
-                        }
-                        if let Some(old) = waiting.replace(new) {
-                            old.close("another tablet is waiting");
+                    incoming = accept.as_mut() => {
+                        let Some(incoming) = incoming else {
+                            session.await;
+                            return;
+                        };
+                        accept.set(self.endpoint.accept());
+                        match incoming {
+                            Ok(new) => new,
+                            Err(e) => {
+                                log_failed_attempt(&e);
+                                continue;
+                            }
                         }
                     }
-                    Err(e) => log_failed_attempt(&e),
+                    Some(new) = dialed.recv() => {
+                        tracing::info!("the tablet is on the USB cable now; moving its session there");
+                        new
+                    }
+                };
+                // The same tablet again: its old session is dead (app
+                // restarted, network changed) even if the idle timeout
+                // hasn't noticed yet, or it's now on the cable. Don't make
+                // it wait.
+                if new.peer_fingerprint() == conn.peer_fingerprint() {
+                    tracing::info!("the tablet reconnected, ending its previous session");
+                    conn.close("replaced by a new connection");
+                }
+                if let Some(old) = waiting.replace(new) {
+                    old.close("another tablet is waiting");
                 }
             }
         }
@@ -342,25 +367,48 @@ impl Host {
 
     /// Dials tablets on USB tethering links (the tablet is our gateway
     /// there; outgoing connections need no firewall rule). Paired tablets
-    /// only; the session itself is the same as over Wi-Fi.
-    async fn usb_loop(&self, on_paired: &(impl Fn(&str) + Send + Sync)) {
+    /// only; the session itself is the same as over Wi-Fi. With no session,
+    /// any paired tablet every second; during a Wi-Fi session, the same
+    /// tablet every [`USB_UPGRADE_EVERY`], so plugging in the cable moves
+    /// the session onto it.
+    async fn usb_loop(&self) {
+        let mut last_upgrade_try: Option<std::time::Instant> = None;
         loop {
             tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-            let Ok(_slot) = self.session.try_lock() else {
-                continue;
-            }; // a tablet is connected
-            let paired: Vec<_> = self
-                .store
-                .lock()
-                .await
-                .devices()
-                .iter()
-                .map(|d| d.fingerprint)
-                .collect();
+            let idle = self.session.try_lock().is_ok();
+            let paired: Vec<_> = if idle {
+                self.store
+                    .lock()
+                    .await
+                    .devices()
+                    .iter()
+                    .map(|d| d.fingerprint)
+                    .collect()
+            } else {
+                let on_usb = self.status.borrow().tablet.as_ref().map(|t| t.usb);
+                let current = self
+                    .link
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .as_ref()
+                    .map(Connection::peer_fingerprint);
+                match (on_usb, current) {
+                    (Some(false), Some(fp))
+                        if last_upgrade_try.is_none_or(|t| t.elapsed() >= USB_UPGRADE_EVERY) =>
+                    {
+                        vec![fp]
+                    }
+                    _ => continue,
+                }
+            };
             if paired.is_empty() {
                 continue;
             }
-            for link in crate::usb::tether_links() {
+            let links = crate::usb::tether_links();
+            if !idle && !links.is_empty() {
+                last_upgrade_try = Some(std::time::Instant::now());
+            }
+            for link in links {
                 if !self
                     .usb_tip_shown
                     .swap(true, std::sync::atomic::Ordering::Relaxed)
@@ -376,7 +424,12 @@ impl Host {
                 match tokio::time::timeout(std::time::Duration::from_millis(1500), dial).await {
                     Ok(Ok(conn)) => {
                         tracing::info!(%addr, "tablet reached over USB");
-                        self.run_session(&conn, TransportKind::Usb, on_paired).await;
+                        if self.dialed_tx.send(conn).await.is_err() {
+                            return; // the host is shutting down
+                        }
+                        // Let the accept loop start that session before
+                        // looking again, so the tablet isn't dialled twice.
+                        tokio::time::sleep(USB_UPGRADE_EVERY).await;
                         break;
                     }
                     // The tablet isn't listening (app closed) or refused us.
@@ -1044,6 +1097,12 @@ mod tests {
 
     /// A host on a loopback port with pairing open.
     async fn host() -> (Identity, SocketAddr, PairingOffer) {
+        let (_, identity, addr, offer) = running_host().await;
+        (identity, addr, offer)
+    }
+
+    /// [`host`], keeping a handle on it.
+    async fn running_host() -> (Arc<Host>, Identity, SocketAddr, PairingOffer) {
         let identity = Identity::generate().unwrap();
         let config = HostConfig {
             host_name: "Host".into(),
@@ -1063,8 +1122,39 @@ mod tests {
         let host = Host::new(identity.clone(), config, PairingStore::in_memory(), pen).unwrap();
         let addr = host.local_addr().unwrap();
         let offer = host.open_pairing().await.unwrap();
-        tokio::spawn(host.run(|_| {}));
-        (identity, addr, offer)
+        tokio::spawn(host.clone().run(|_| {}));
+        (host, identity, addr, offer)
+    }
+
+    /// A tablet in a Wi-Fi session plugs in the USB cable: the host dials it
+    /// there and the session moves onto the cable, ending the Wi-Fi one.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_wifi_session_moves_to_the_usb_cable() {
+        let (host, identity, addr, offer) = running_host().await;
+        let tablet = Identity::generate().unwrap();
+        let wifi = ib_transport::ClientEndpoint::new(tablet.clone()).unwrap();
+        let old = wifi.connect(addr, identity.fingerprint()).await.unwrap();
+        join(&old, Some(offer.secret)).await.unwrap();
+
+        // What usb_loop does once it finds the tethering link.
+        let listener = ib_transport::UsbListener::bind(
+            &tablet,
+            "127.0.0.1:0".parse().unwrap(),
+            identity.fingerprint(),
+        )
+        .unwrap();
+        let usb_addr = listener.local_addr().unwrap();
+        let dialed = host.endpoint.dial(usb_addr, vec![tablet.fingerprint()]);
+        let (dialed, accepted) = tokio::join!(dialed, listener.accept());
+        host.dialed_tx.send(dialed.unwrap()).await.unwrap();
+        let usb = accepted.unwrap().unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(3), join(&usb, None))
+            .await
+            .expect("the cable session waited")
+            .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(3), old.closed())
+            .await
+            .expect("the Wi-Fi session stayed open");
     }
 
     /// An app that was killed leaves its session open on the host until the

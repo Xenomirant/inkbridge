@@ -282,22 +282,29 @@ class PadActivity : ComponentActivity() {
         reconnecting = true
         thread(name = "inkbridge-reconnect") {
             var fresh: org.inkbridge.core.Session? = null
-            while (reconnecting && fresh == null) {
+            // Stops too when the session was replaced meanwhile: the computer moved it onto the
+            // USB cable (watchUsb), which is what closed the old one.
+            val replaced = { SessionHolder.session !== dead }
+            while (reconnecting && fresh == null && !replaced()) {
                 val screen = VideoDecoder.screen(metrics.widthPixels, metrics.heightPixels)
                 fresh = Reconnect.attempt(
                     UsbLink.tetherAddress(),
                     { ip ->
-                        runCatching {
-                            org.inkbridge.core.Session.acceptUsb(code, identity, deviceName(), ip, USB_WAIT_MS, screen)
-                        }.getOrNull()
+                        synchronized(UsbLink.listening) {
+                            if (replaced()) return@synchronized null
+                            runCatching {
+                                org.inkbridge.core.Session.acceptUsb(code, identity, deviceName(), ip, USB_WAIT_MS, screen)
+                            }.getOrNull()
+                        }
                     },
                     {
+                        if (replaced()) return@attempt null
                         runCatching {
                             org.inkbridge.core.Session.connect(code, identity, deviceName(), false, screen)
                         }.getOrNull()
                     },
                 )
-                if (fresh == null) Thread.sleep(RETRY_MS)
+                if (fresh == null && !replaced()) Thread.sleep(RETRY_MS)
             }
             val session = fresh ?: return@thread
             runOnUiThread {
@@ -309,6 +316,56 @@ class PadActivity : ComponentActivity() {
                     SessionHolder.release(session)
                 }
                 reconnecting = false
+            }
+        }
+    }
+
+    @Volatile private var watchingUsb = false
+
+    /**
+     * Wi-Fi session → USB: while the session runs over Wi-Fi and the USB cable link is up, wait
+     * for the computer to dial over the cable. It does every few seconds and, once through,
+     * ends the Wi-Fi session; the pad then carries on over the cable.
+     */
+    private fun watchUsb() {
+        if (watchingUsb) return
+        val code = SessionHolder.code ?: return
+        val identity = runCatching { Storage(this).identity() }.getOrNull() ?: return
+        val metrics = resources.displayMetrics
+        watchingUsb = true
+        thread(name = "inkbridge-usb-watch") {
+            while (watchingUsb) {
+                val current = SessionHolder.session
+                val ip = UsbLink.tetherAddress()
+                val onWifi = current != null && runCatching { !current.host().usb }.getOrDefault(false)
+                if (!onWifi || ip == null || reconnecting) {
+                    Thread.sleep(RETRY_MS)
+                    continue
+                }
+                val started = android.os.SystemClock.uptimeMillis()
+                val moved = synchronized(UsbLink.listening) {
+                    if (!watchingUsb || SessionHolder.session !== current) return@synchronized false
+                    val fresh = runCatching {
+                        val screen = VideoDecoder.screen(metrics.widthPixels, metrics.heightPixels)
+                        org.inkbridge.core.Session.acceptUsb(code, identity, deviceName(), ip, USB_WAIT_MS, screen)
+                    }.getOrNull() ?: return@synchronized false
+                    // Swapped before the lock is let go, so a reconnect that the closing Wi-Fi
+                    // session started sees it and stands down.
+                    if (SessionHolder.session === current) {
+                        SessionHolder.session = fresh
+                        true
+                    } else {
+                        SessionHolder.release(fresh)
+                        false
+                    }
+                }
+                if (moved) {
+                    watchingUsb = false
+                    runOnUiThread { recreate() }
+                    return@thread
+                }
+                // A wait that ended at once (the port was busy) shouldn't spin.
+                if (android.os.SystemClock.uptimeMillis() - started < RETRY_MS) Thread.sleep(RETRY_MS)
             }
         }
     }
@@ -325,6 +382,7 @@ class PadActivity : ComponentActivity() {
         super.onStart()
         runCatching { wifiLock.acquire() }
         info.post(ticker)
+        watchUsb()
     }
 
     override fun onStop() {
@@ -332,6 +390,7 @@ class PadActivity : ComponentActivity() {
         runCatching { wifiLock.release() }
         info.removeCallbacks(ticker)
         reconnecting = false
+        watchingUsb = false
     }
 
     private companion object {
