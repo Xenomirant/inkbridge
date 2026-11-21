@@ -40,8 +40,10 @@ USB tethering):**
     input reader computes the direction (`dumpsys input`, Last Cooked Touch: orientation sweeps
     −π..π), but every MotionEvent the app gets has AXIS_ORIENTATION = 0 (2026-11-21, 3040 events,
     `adb shell setprop log.tag.InkbridgePen DEBUG`). The loss is between the input reader and the
-    app's window, so in Android/ZUI; an app can't get it back. The tilt angle is right, so pens tilt
-    by the right amount, always leaning away from the user (−Y).
+    app's window, so in Android/ZUI; an app can't get it back. The tilt angle is right; since 2026-11-21
+    the direction comes from the drawing hand (asked at the first start, changed on the home
+    screen): the pen top towards that side and the user. A tablet that reports any direction is
+    trusted from then on (`TiltDirection`).
   - ~~The pen button doesn't reach the computer~~: fixed 2026-11-21 (`BUTTON_STYLUS_SECONDARY`),
     checked with the Tab Pen Plus on the Windows host.
   - A session that starts over Wi-Fi stays there when USB tethering comes up (seen when QUIC over

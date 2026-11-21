@@ -58,6 +58,11 @@ class Storage(context: Context) {
         get() = prefs.getString(KEY_OPEN_PAD, null)
         set(value) = prefs.edit().putString(KEY_OPEN_PAD, value).apply()
 
+    /** The hand the user draws with; null until they've been asked. */
+    var hand: Hand?
+        get() = prefs.getString(KEY_HAND, null)?.let { v -> Hand.entries.firstOrNull { it.name == v } }
+        set(value) = prefs.edit().putString(KEY_HAND, value?.name).apply()
+
     private fun save(hosts: List<PairedHost>) =
         prefs.edit().putString(KEY_HOSTS, PairedHosts.encode(hosts)).apply()
 
@@ -78,6 +83,7 @@ class Storage(context: Context) {
         const val KEY_CODE = "paired.code"
         const val KEY_NAME = "paired.name"
         const val KEY_OPEN_PAD = "open_pad"
+        const val KEY_HAND = "hand"
         const val KEY_HOSTS = "paired.hosts"
     }
 }

@@ -23,6 +23,9 @@ object StylusMapper {
     /** Pen diagnostics: `adb shell setprop log.tag.InkbridgePen DEBUG`, then `adb logcat -s InkbridgePen`. */
     private const val TAG = "InkbridgePen"
 
+    /** Tilt direction for tablets that don't report one; the hand is set from [Storage.hand]. */
+    val direction = TiltDirection()
+
     fun isStylus(ev: MotionEvent, index: Int): Boolean {
         val t = ev.getToolType(index)
         return t == MotionEvent.TOOL_TYPE_STYLUS || t == MotionEvent.TOOL_TYPE_ERASER
@@ -58,7 +61,8 @@ object StylusMapper {
         val x = if (pos < 0) ev.getX(index) else ev.getHistoricalX(index, pos)
         val y = if (pos < 0) ev.getY(index) else ev.getHistoricalY(index, pos)
         val pressure = if (pos < 0) ev.getPressure(index) else ev.getHistoricalPressure(index, pos)
-        val (tiltX, tiltY) = cartesianTilt(axis(MotionEvent.AXIS_TILT), axis(MotionEvent.AXIS_ORIENTATION))
+        val tilt = axis(MotionEvent.AXIS_TILT)
+        val (tiltX, tiltY) = cartesianTilt(tilt, direction.orientation(axis(MotionEvent.AXIS_ORIENTATION), tilt))
         return StylusSample(
             tUs = timestampUs(ev, pos).toULong(),
             x = normalise(x, area.left, area.width()),

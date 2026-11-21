@@ -21,6 +21,7 @@ class MainActivity : ComponentActivity() {
     private lateinit var storage: Storage
     private lateinit var status: TextView
     private lateinit var hostList: LinearLayout
+    private lateinit var handLabel: TextView
     private var busy = false
 
     private val scan = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { r ->
@@ -30,9 +31,11 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         storage = Storage(this)
+        storage.hand?.let { StylusMapper.direction.hand = it }
         setContentView(buildUi())
         refresh()
         handleIntent(intent)
+        if (storage.hand == null) askHand()
         // Android stopped the app while a pad was open (an update, low
         // memory): carry on where the user was.
         if (savedInstanceState == null && SessionHolder.session == null) {
@@ -133,6 +136,13 @@ class MainActivity : ComponentActivity() {
                 gravity = Gravity.CENTER
                 setPadding(0, pad / 2, 0, 0)
             })
+            handLabel = Ui.label(context, "", 13f, Ui.MUTED).apply {
+                gravity = Gravity.CENTER
+                setPadding(0, pad, 0, 0)
+                setOnClickListener { askHand() }
+            }
+            addView(handLabel)
+            showHand()
             addView(Ui.label(context, "Core ${coreVersion()}", 12f, Ui.OUTLINE).apply {
                 gravity = Gravity.CENTER
                 setPadding(0, pad, 0, 0)
@@ -168,6 +178,27 @@ class MainActivity : ComponentActivity() {
             ).apply { bottomMargin = gap })
         }
         if (!busy) status.text = if (hosts.isEmpty()) "Start Inkbridge on your computer to get its QR code." else ""
+    }
+
+    /**
+     * Which hand the user draws with. Asked once at the first start; tapping the line on the
+     * home screen changes it. Used for the pen's tilt direction where the tablet reports none.
+     */
+    private fun askHand() {
+        val hands = Hand.entries
+        AlertDialog.Builder(this)
+            .setTitle("Which hand do you draw with?")
+            .setItems(hands.map { it.label }.toTypedArray()) { _, i ->
+                storage.hand = hands[i]
+                StylusMapper.direction.hand = hands[i]
+                showHand()
+            }
+            .show()
+    }
+
+    private fun showHand() {
+        val hand = storage.hand
+        handLabel.text = if (hand == null) "Drawing hand: not set (tap to choose)" else "Drawing hand: ${hand.label} (tap to change)"
     }
 
     /** Long-press on a computer: remove its pairing from this tablet. */

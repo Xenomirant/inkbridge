@@ -6,7 +6,7 @@ Read `docs/status.md` (M3 Linux block: verified, known issues, to do) and `docs/
 1. ~~Pen button~~ done 2026-11-21: `StylusMapper.isBarrelPressed` also takes BUTTON_STYLUS_SECONDARY
    (the Tab Pen Plus's BTN_STYLUS2). Still to check with the pen on a host.
 2. Tilt X always 0: measured 2026-11-21, Android/ZUI hands the app orientation 0 although its input
-   reader has the direction (status.md). Only the angle arrives; the direction can't be recovered.
+   reader has the direction (status.md). Only the angle arrives; the direction now comes from the drawing hand (done).
 3. Wi-Fi session -> USB: the app listens for the host's USB dial only while connecting
    (`Session.acceptUsb`); keep the listener during a Wi-Fi session, then add the host side
    (dial every 5 s, hand the connection to the accept loop; see status.md).
