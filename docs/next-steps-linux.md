@@ -7,7 +7,7 @@ Read `docs/status.md` (M3 Linux block: verified, known issues, to do) and `docs/
    (the Tab Pen Plus's BTN_STYLUS2). Still to check with the pen on a host.
 2. Tilt X always 0: measured 2026-11-21, Android/ZUI hands the app orientation 0 although its input
    reader has the direction (status.md). Only the angle arrives; the direction now comes from the drawing hand (done).
-3. ~~Wi-Fi session -> USB~~ done 2026-11-21 (status.md); still to try with a real cable.
+3. ~~Wi-Fi session -> USB~~ done 2026-11-21, checked with the cable on Windows (status.md).
 4. Linux kit: `run.sh` new checks (keyboard, extra screen, --adb). `dev-setup.sh` sets
    CARGO_HTTP_MULTIPLEXING=false (done); rustup takes the toolchain from rust-toolchain.toml itself.
 

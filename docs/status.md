@@ -51,7 +51,9 @@ USB tethering):**
     connection to the accept loop, which ends the Wi-Fi session; the pad keeps a USB listener open
     meanwhile (`PadActivity.watchUsb`) and carries on over the cable. Listeners take turns on the
     port (`UsbLink.listening`), and a reconnect started by the closing Wi-Fi session stands down.
-    Covered by `a_wifi_session_moves_to_the_usb_cable`; not yet tried with a real cable.
+    Covered by `a_wifi_session_moves_to_the_usb_cable`. Checked on Windows with the TB331FC: Wi-Fi
+    session, then USB tethering on: moved to the cable 13 s later (the tethering link takes a few
+    seconds to come up), the new session running 55 ms after the dial.
 - `--adb` works: `adb reverse` set up by itself, the tablet connects over the cable (TCP), 36 ms.
 - VA-API hardware test (`cargo test -p ib-encode --features vaapi -- --ignored`) passes on the iGPU.
 - Keyboard from the tablet with the uinput option: a third virtual device ("Inkbridge Keyboard").
