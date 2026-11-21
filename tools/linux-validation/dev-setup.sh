@@ -3,7 +3,7 @@
 # be made and tested on the spot. Run after `bash vpn.sh` if you need it.
 #   - Claude Code: the binary in this kit if present, else the official installer
 #   - build packages + Rust (rustup, user-level)
-#   - the source: inkbridge.bundle from this kit → ~/inkbridge
+#   - the source: cloned from GitHub (or this kit's bundle offline) → ~/inkbridge
 set -u
 KIT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -28,9 +28,14 @@ sudo apt-get install -y build-essential pkg-config git curl clang libclang-dev \
 
 command -v cargo >/dev/null || curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal -c clippy,rustfmt
 
-if [[ -f "$KIT/inkbridge.bundle" && ! -d "$HOME/inkbridge" ]]; then
-    git clone -q "$KIT/inkbridge.bundle" "$HOME/inkbridge"
+# The source: from GitHub (public), else the bundle in this kit (offline).
+if [[ ! -d "$HOME/inkbridge" ]]; then
+    git clone -q https://github.com/Xenomirant/inkbridge.git "$HOME/inkbridge" \
+        || { [[ -f "$KIT/inkbridge.bundle" ]] && git clone -q "$KIT/inkbridge.bundle" "$HOME/inkbridge"; }
 fi
+# Commits use GitHub's private address, never a personal e-mail.
+git -C "$HOME/inkbridge" config user.name "Sergei Kudriashov"
+git -C "$HOME/inkbridge" config user.email "55895730+Xenomirant@users.noreply.github.com"
 [[ -f "$KIT/HANDOFF.md" && -d "$HOME/inkbridge" ]] && cp "$KIT/HANDOFF.md" "$HOME/inkbridge/"
 
 echo
