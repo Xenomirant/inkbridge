@@ -17,6 +17,7 @@ Read `docs/status.md` (M3 Linux block: verified, known issues, to do) and `docs/
 - 2026-11-21: the user shrank C: and left 64 GB unallocated on the NVMe (BitLocker is off) for an
   Ubuntu 26.04 dual boot. After installing, `tools/linux-validation/desktops.sh` adds KDE Plasma
   (Wayland), Xfce (X11) and optionally Sway (wlroots), all chosen on SDDM's login screen.
-- Then: desktop tray app (never run on Linux), re-measure fps/latency with the NVIDIA driver
-  (the live session's ~31 fps cap came from NVK/zink read-back), two real monitors, non-US text.
+- Then: desktop tray app (never run on Linux), latency with the NVIDIA driver, two real monitors,
+  non-US text. The ~30 fps capture cap stays with the NVIDIA driver too, so it isn't NVK/zink
+  (2026-11-21, `docs/latency.md`): compare KDE and Xfce next.
 - No-setup pointer/touch on the extra screen waits for flatpak/xdg-desktop-portal#2078.

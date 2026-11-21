@@ -25,9 +25,17 @@ Still to measure: Windows over Wi-Fi (QUIC), the Intel iGPU on Windows.
 drew at 60 fps (`glxgears`), but the screen cast delivered about 31 fps, with Firefox and with a
 60 fps GStreamer pattern alike. The monitor hangs off the RTX 5060, which runs Mesa's NVK there (GL
 through zink); the screen cast copies each frame from the GPU into memory, which seems to be the
-limit. Measure again on an installed system (NVIDIA driver, or the monitor on the Intel GPU) and
-consider DMA-BUF capture. Asking PipeWire for a maximum frame rate changed nothing (GNOME offers
-the monitor's rate anyway).
+limit. Asking PipeWire for a maximum frame rate changed nothing (GNOME offers the monitor's rate
+anyway).
+
+Re-measured on the installed system (2026-11-21, Ubuntu 26.04.1, GNOME 50.1 Wayland, NVIDIA driver
+595.99.02, 60 Hz monitor on the RTX 5060), with the self-test now moving the pointer itself (the
+cursor is embedded in the stream, so each move is a new frame): still a frame every ~33 ms (median
+32–33 ms, p95 35 ms) with 59.95 fps negotiated, and the max-framerate request made no difference
+again. So the cap isn't NVK/zink. It isn't Inkbridge either: GNOME hands over shared-memory
+(`MemFd`) buffers and our process callback takes 1.7 ms median, 8.8 ms worst. GNOME delivers every
+second frame; next: compare KDE Plasma (Wayland portal) and Xfce (X11 capture, no portal), then
+consider DMA-BUF capture so GNOME doesn't copy frames into memory.
 
 **Other video work on the computer** competes for the same hardware encoder. On the MacBook, two
 hardware video conversions (ffmpeg, VideoToolbox) running at the same time doubled the screen
