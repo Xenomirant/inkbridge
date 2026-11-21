@@ -278,12 +278,53 @@ fn wayland(r: &mut Report, results: &Path) {
         return;
     }
 
-    println!("\n>>> For the next 5 seconds, move the mouse or drag a window around.");
+    let Some(frames) = frame_rate(r, desktop, capture.as_mut(), display) else {
+        return;
+    };
+    let last = frames.last().expect("not empty");
+    match save_ppm(last, &results.join("capture.ppm")) {
+        Ok(p) => r.info(&format!("Last captured frame saved to {}", p.display())),
+        Err(e) => r.info(&format!("could not save the captured frame: {e}")),
+    }
+
+    encode_captured(r, &frames);
+    pointer(r, desktop, display);
+}
+
+/// Counts the frames that arrive in 5 s while the screen changes; returns a few for the encoder
+/// check, or `None` after reporting a failure.
+fn frame_rate(
+    r: &mut Report,
+    desktop: &crate::wayland::WaylandDesktop,
+    capture: &mut dyn ib_capture::ScreenSource,
+    display: ib_geometry::Region,
+) -> Option<Vec<Frame>> {
+    // The cursor is embedded in the stream, so moving it changes the screen on every step:
+    // driving it ourselves measures the capture path, not how busily someone moves the mouse.
+    let mut mover = desktop
+        .pointer_sink()
+        .map(|sink| CircleMover::new(sink, display));
+    if mover.is_some() {
+        println!(
+            "\n>>> For the next 5 seconds the pointer moves in a circle by itself; leave the mouse alone."
+        );
+    } else {
+        println!("\n>>> For the next 5 seconds, move the mouse or drag a window around.");
+    }
     let mut frames = Vec::new();
     let mut arrivals = Vec::new();
     let window = Instant::now();
     while window.elapsed() < Duration::from_secs(5) {
-        match capture.next_frame(Duration::from_millis(100)) {
+        let wait = if let Some(m) = mover.as_mut() {
+            if let Err(e) = m.step() {
+                r.info(&format!("moving the pointer for the frame-rate check: {e}"));
+                mover = None;
+            }
+            CircleMover::<dyn ib_inject::PenSink>::STEP
+        } else {
+            Duration::from_millis(100)
+        };
+        match capture.next_frame(wait) {
             Ok(Some(f)) => {
                 arrivals.push(window.elapsed());
                 // Keep a few for the encoder check; the rest only count.
@@ -294,34 +335,86 @@ fn wayland(r: &mut Report, results: &Path) {
             Ok(None) => {}
             Err(e) => {
                 r.fail(&format!("capture: {e}"));
-                return;
+                return None;
             }
         }
     }
     if frames.is_empty() {
         r.fail("no frames arrived in 5 s (did anything on screen change?)");
-        return;
+        return None;
     }
     let mut gaps: Vec<Duration> = arrivals
         .windows(2)
         .map(|w| w[1].saturating_sub(w[0]))
         .collect();
     r.pass(&format!(
-        "{} frames in 5 s ({:.0} fps while the screen changed)",
+        "{} frames in 5 s ({:.0} fps while the screen changed{})",
         arrivals.len(),
-        arrivals.len() as f64 / 5.0
+        arrivals.len() as f64 / 5.0,
+        if mover.is_some() {
+            ", pointer moved by the test"
+        } else {
+            ""
+        }
     ));
+    drop(mover);
     if gaps.len() > 2 {
         r.info(&format!("Gap between frames: {}", timing(&mut gaps)));
     }
-    let last = frames.last().expect("not empty");
-    match save_ppm(last, &results.join("capture.ppm")) {
-        Ok(p) => r.info(&format!("Last captured frame saved to {}", p.display())),
-        Err(e) => r.info(&format!("could not save the captured frame: {e}")),
+    Some(frames)
+}
+
+/// Moves the pointer around a circle in the middle of `display`, by time, so each step lands on
+/// a new spot and the screen keeps changing faster than any monitor refreshes.
+struct CircleMover<S: ib_inject::PenSink + ?Sized> {
+    sink: Box<S>,
+    centre: (f64, f64),
+    radius: f64,
+    started: Instant,
+    last: Option<Instant>,
+}
+
+impl<S: ib_inject::PenSink + ?Sized> CircleMover<S> {
+    /// Time between moves: 500 per second, above any refresh rate the compositor can pace to.
+    const STEP: Duration = Duration::from_millis(2);
+    /// One turn per second.
+    const TURNS_PER_S: f64 = 1.0;
+
+    fn new(sink: Box<S>, display: ib_geometry::Region) -> Self {
+        Self {
+            sink,
+            centre: (
+                f64::from(display.width) / 2.0,
+                f64::from(display.height) / 2.0,
+            ),
+            radius: f64::from(display.height) / 6.0,
+            started: Instant::now(),
+            last: None,
+        }
     }
 
-    encode_captured(r, &frames);
-    pointer(r, desktop, display);
+    /// Where the pointer is `elapsed` after the start.
+    fn point_at(&self, elapsed: Duration) -> ib_geometry::DesktopPoint {
+        let angle = std::f64::consts::TAU * Self::TURNS_PER_S * elapsed.as_secs_f64();
+        ib_geometry::DesktopPoint {
+            x: self.centre.0 + self.radius * angle.cos(),
+            y: self.centre.1 + self.radius * angle.sin(),
+        }
+    }
+
+    /// Moves the pointer if a step's time has passed since the last move.
+    fn step(&mut self) -> Result<(), ib_inject::InjectError> {
+        let now = Instant::now();
+        if self
+            .last
+            .is_some_and(|t| now.duration_since(t) < Self::STEP)
+        {
+            return Ok(());
+        }
+        self.last = Some(now);
+        let at = self.point_at(now.duration_since(self.started));
+        self.sink.move_pointer(at)
+    }
 }
 
 /// Real desktop frames through the hardware encoder: catches stride and
@@ -455,6 +548,35 @@ fn save_ppm(frame: &Frame, path: &Path) -> std::io::Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const DISPLAY: ib_geometry::Region = ib_geometry::Region {
+        x: 0,
+        y: 0,
+        width: 2560,
+        height: 1440,
+    };
+
+    #[test]
+    fn circle_mover_goes_round_the_middle_of_the_display() {
+        let m = CircleMover::new(Box::new(ib_inject::FakePenSink::default()), DISPLAY);
+        let start = m.point_at(Duration::ZERO);
+        assert!((start.x - 1520.0).abs() < 1e-9 && (start.y - 720.0).abs() < 1e-9);
+        let quarter = m.point_at(Duration::from_millis(250));
+        assert!((quarter.x - 1280.0).abs() < 1e-6 && (quarter.y - 960.0).abs() < 1e-6);
+        let turn = m.point_at(Duration::from_secs(1));
+        assert!((turn.x - start.x).abs() < 1e-6 && (turn.y - start.y).abs() < 1e-6);
+    }
+
+    #[test]
+    fn circle_mover_moves_at_most_once_per_step() {
+        let mut m = CircleMover::new(Box::new(ib_inject::FakePenSink::default()), DISPLAY);
+        m.step().unwrap();
+        m.step().unwrap();
+        assert_eq!(m.sink.pointer_moves.len(), 1);
+        std::thread::sleep(CircleMover::<ib_inject::FakePenSink>::STEP);
+        m.step().unwrap();
+        assert_eq!(m.sink.pointer_moves.len(), 2);
+    }
 
     #[test]
     fn only_yes_counts_as_yes() {
