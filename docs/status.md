@@ -212,7 +212,7 @@ Checked on Windows: start, window, pairing list, resizing. To do: installers (M6
 runs, the tablet's display choice and keyboard state in the window, a first-run guide.
 
 ## Open issues
-- Windows: root cause of occasional rejected pen events (a resync workaround exists, commit 945d526).
+- Windows: root cause of occasional rejected pen events (a resync workaround exists, commit 715fd92).
 - Possible brief flicker on the tablet after switching the View (zoom) mode.
 - Wi-Fi stalls: on the campus network the link pauses for 100-230 ms every 5-10 s and loses 14-40
   packets in a burst (host log, `RUST_LOG=info,ib_host::server=debug`, "video link" lines). The
