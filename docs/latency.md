@@ -34,8 +34,20 @@ cursor is embedded in the stream, so each move is a new frame): still a frame ev
 32–33 ms, p95 35 ms) with 59.95 fps negotiated, and the max-framerate request made no difference
 again. So the cap isn't NVK/zink. It isn't Inkbridge either: GNOME hands over shared-memory
 (`MemFd`) buffers and our process callback takes 1.7 ms median, 8.8 ms worst. GNOME delivers every
-second frame; next: compare KDE Plasma (Wayland portal) and Xfce (X11 capture, no portal), then
-consider DMA-BUF capture so GNOME doesn't copy frames into memory.
+second frame.
+
+KDE Plasma on the same PC (2026-11-23, Wayland via xdg-desktop-portal-kde, same monitor, NVIDIA
+driver and build; the monitor offers 59.95, 74.97 and 100 Hz):
+
+| Desktop, refresh | Negotiated | Delivered | Gap median (p95) |
+|---|---|---|---|
+| GNOME 50.1, 59.95 Hz | 59.95 fps | ~30 fps | 33 ms (35 ms) |
+| KDE Plasma, 59.95 Hz | 59 fps | 58 fps | 19.5 ms (20.8 ms) |
+| KDE Plasma, 100 Hz | 100 fps | 74 fps (two runs) | 13.4 ms (14.3 ms) |
+
+So the cap is GNOME's, not Linux's. Still to try: GNOME with the monitor at 100 Hz (if it still
+halves, ~50 fps is a settings-only tip), Xfce (X11 capture, no portal), DMA-BUF capture so GNOME
+doesn't copy frames into memory, and a mutter report with these numbers.
 
 **Other video work on the computer** competes for the same hardware encoder. On the MacBook, two
 hardware video conversions (ffmpeg, VideoToolbox) running at the same time doubled the screen

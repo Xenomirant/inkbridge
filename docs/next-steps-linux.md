@@ -19,5 +19,8 @@ Read `docs/status.md` (M3 Linux block: verified, known issues, to do) and `docs/
   (Wayland), Xfce (X11) and optionally Sway (wlroots), all chosen on SDDM's login screen.
 - Then: desktop tray app (never run on Linux), latency with the NVIDIA driver, two real monitors,
   non-US text. The ~30 fps capture cap stays with the NVIDIA driver too, so it isn't NVK/zink
-  (2026-11-21, `docs/latency.md`): compare KDE and Xfce next.
+  (2026-11-21, `docs/latency.md`). KDE Plasma delivers 58 fps at 60 Hz and 74 fps at 100 Hz on the
+  same PC (2026-11-23), so the cap is GNOME's: next, GNOME at 100 Hz and Xfce.
+- Test system: Xfce's `light-locker` autostarts on Plasma/Xfce but needs LightDM, so it crashes
+  under SDDM; disable it per user (`~/.config/autostart/light-locker.desktop` with `Hidden=true`).
 - No-setup pointer/touch on the extra screen waits for flatpak/xdg-desktop-portal#2078.
